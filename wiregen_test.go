@@ -19,13 +19,13 @@ type Address struct {
 }
 
 type User struct {
-	ID      int      `json:"id"`
+	Age     *int     `json:"age,omitempty"`
+	Address Address  `json:"address"`
 	Name    string   `json:"name"`
 	Email   string   `json:"email,omitempty"`
-	Age     *int     `json:"age,omitempty"`
 	Status  Status   `json:"status"`
-	Address Address  `json:"address"`
 	Tags    []string `json:"tags,omitempty"`
+	ID      int      `json:"id"`
 }
 
 type Notification struct {

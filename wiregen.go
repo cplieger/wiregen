@@ -30,25 +30,15 @@ type SSERegEntry struct {
 
 // Registry holds all type registrations for code generation.
 type Registry struct {
-	// WireTypes is the set of Go struct types to generate TS for.
-	WireTypes []reflect.Type
-	// Enums maps Go type names to their enum values.
-	Enums map[string]EnumDef
-	// EnumTSName maps Go enum type names to preferred TS names (for aliasing).
-	EnumTSName map[string]string
-	// TSNameOverride maps Go type names to preferred TS interface names.
-	TSNameOverride map[string]string
-	// PathNameOverride overrides the automatic snake_case path for specific types.
+	Enums            map[string]EnumDef
+	EnumTSName       map[string]string
+	TSNameOverride   map[string]string
 	PathNameOverride map[string]string
-	// SSEEvents is the set of SSE events to register decoders for.
-	SSEEvents []SSERegEntry
-	// ValidatorsImport is the import path for the validators module (default: "../validators.js").
+	typeByName       map[string]reflect.Type
 	ValidatorsImport string
-	// BusImport is the import path for the bus module with registerSSEDecoder (default: "../bus.js").
-	BusImport string
-
-	// internal index built on first use
-	typeByName map[string]reflect.Type
+	BusImport        string
+	WireTypes        []reflect.Type
+	SSEEvents        []SSERegEntry
 }
 
 func (r *Registry) init() {
@@ -87,17 +77,17 @@ func (r *Registry) Generate(outDir string) error {
 	}
 	var typesBuf strings.Builder
 	r.generateTypes(&typesBuf)
-	if err := os.WriteFile(filepath.Join(outDir, "types.gen.ts"), []byte(typesBuf.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outDir, "types.gen.ts"), []byte(typesBuf.String()), 0o644); err != nil { //nolint:gosec // generated TypeScript source is intentionally world-readable
 		return fmt.Errorf("write types.gen.ts: %w", err)
 	}
 	var decodersBuf strings.Builder
 	r.generateDecoders(&decodersBuf)
-	if err := os.WriteFile(filepath.Join(outDir, "decoders.gen.ts"), []byte(decodersBuf.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outDir, "decoders.gen.ts"), []byte(decodersBuf.String()), 0o644); err != nil { //nolint:gosec // generated TypeScript source is intentionally world-readable
 		return fmt.Errorf("write decoders.gen.ts: %w", err)
 	}
 	var registryBuf strings.Builder
 	r.generateRegistry(&registryBuf)
-	if err := os.WriteFile(filepath.Join(outDir, "registry.gen.ts"), []byte(registryBuf.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outDir, "registry.gen.ts"), []byte(registryBuf.String()), 0o644); err != nil { //nolint:gosec // generated TypeScript source is intentionally world-readable
 		return fmt.Errorf("write registry.gen.ts: %w", err)
 	}
 	return nil
@@ -156,8 +146,7 @@ type fieldInfo struct {
 
 func (r *Registry) parseFields(t reflect.Type) []fieldInfo {
 	var fields []fieldInfo
-	for i := range t.NumField() {
-		sf := t.Field(i)
+	for sf := range t.Fields() {
 		if sf.Anonymous {
 			embedded := sf.Type
 			if embedded.Kind() == reflect.Pointer {
@@ -427,7 +416,7 @@ func (r *Registry) generateTypes(w *strings.Builder) {
 	}
 }
 
-func (r *Registry) generateDecoders(w *strings.Builder) {
+func (r *Registry) generateDecoders(w *strings.Builder) { //nolint:gocyclo // large but flat type switch
 	var bodies strings.Builder
 	goNames := make([]string, 0, len(r.WireTypes))
 	for _, t := range r.WireTypes {

@@ -1,0 +1,11 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: cplieger/ci/.github/workflows/go-ci.yaml@v1

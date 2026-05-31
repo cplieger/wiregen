@@ -8,4 +8,4 @@ on:
 
 jobs:
   ci:
-    uses: cplieger/ci/.github/workflows/go-ci.yaml@v1
+    uses: cplieger/ci/.github/workflows/go-ci.yaml@fe9f0562ad7e87d51061f58e00ce676d51f5c171 # v1

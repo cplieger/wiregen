@@ -1,85 +1,50 @@
 package wiregen_test
 
 import (
+	"flag"
 	"fmt"
 	"os"
-	"reflect"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cplieger/wiregen"
+	"github.com/cplieger/wiregen/testdata/basic"
+	"github.com/cplieger/wiregen/testdata/unions"
 )
 
-// Sample types for testing — these simulate what a consumer would register.
+var update = flag.Bool("update", false, "update golden files")
 
-type Status string // enum
-
-type Address struct {
-	Street string `json:"street"`
-	City   string `json:"city"`
-	Zip    string `json:"zip,omitempty"`
-}
-
-type User struct {
-	Age     *int     `json:"age,omitempty"`
-	Address Address  `json:"address"`
-	Name    string   `json:"name"`
-	Email   string   `json:"email,omitempty"`
-	Status  Status   `json:"status"`
-	Tags    []string `json:"tags,omitempty"`
-	ID      int      `json:"id"`
-}
-
-type Notification struct {
-	Kind    string `json:"kind"`
-	Message string `json:"message"`
-}
-
-// --- Types for new feature tests ---
-
-// HasUnexported has unexported fields that must be skipped.
-type HasUnexported struct {
-	Name     string `json:"name"`
-	internal int    //nolint:unused // intentionally unexported for test
-	hidden   string //nolint:unused // intentionally unexported for test
-}
-
-// HasBytes has a []byte field that should map to string (base64).
-type HasBytes struct {
-	Data []byte `json:"data"`
-	Name string `json:"name"`
-}
-
-// HasOmitzero uses the Go 1.24 omitzero tag option.
-type HasOmitzero struct {
-	Value string `json:"value,omitzero"`
-	Name  string `json:"name"`
-}
-
-// HasJSONString uses json:",string" to wrap a number as string on the wire.
-type HasJSONString struct {
-	BigID int64  `json:"big_id,string"`
-	Name  string `json:"name"`
-}
-
-// CustomID is a custom type for testing TypeMappings/DecoderMappings.
-type CustomID struct{ Value string }
-
-// HasCustomMapped uses a custom-mapped type.
-type HasCustomMapped struct {
-	ID   CustomID `json:"id"`
-	Name string   `json:"name"`
-}
+// Ensure types are importable (compile-time check).
+var (
+	_ basic.User
+	_ basic.Address
+	_ basic.Notification
+	_ basic.HasUnexported
+	_ basic.HasBytes
+	_ basic.HasOmitzero
+	_ basic.HasJSONString
+	_ basic.HasCustomMapped
+	_ basic.HasTime
+	_ basic.HasRaw
+	_ basic.HasMap
+	_ basic.HasInterface
+	_ basic.WithEmbedding
+	_ unions.CoverageEvent
+	_ unions.NotifyEvent
+	_ unions.ScanEvent
+)
 
 func newRegistry() *wiregen.Registry {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./test-validators.js"),
 		wiregen.WithBusImport("./test-bus.js"),
 	)
-	r.WireTypes = []reflect.Type{
-		reflect.TypeFor[Address](),
-		reflect.TypeFor[User](),
-		reflect.TypeFor[Notification](),
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Address](),
+		wiregen.TypeRef[basic.User](),
+		wiregen.TypeRef[basic.Notification](),
 	}
 	r.Enums = map[string]wiregen.EnumDef{
 		"Status": {Values: []string{"active", "inactive", "banned"}},
@@ -94,11 +59,9 @@ func TestGenerateTypes(t *testing.T) {
 	r := newRegistry()
 	out := r.GenerateTypes()
 
-	// Check enum
 	if !strings.Contains(out, `export type Status = "active" | "inactive" | "banned";`) {
 		t.Errorf("missing Status enum type, got:\n%s", out)
 	}
-	// Check interface
 	if !strings.Contains(out, "export interface User {") {
 		t.Errorf("missing User interface, got:\n%s", out)
 	}
@@ -135,7 +98,6 @@ func TestGenerateDecoders(t *testing.T) {
 	if !strings.Contains(out, "decodeAddress(o[\"address\"])") {
 		t.Errorf("missing nested struct decoder call, got:\n%s", out)
 	}
-	// Check validators import
 	if !strings.Contains(out, `from "./test-validators.js"`) {
 		t.Errorf("missing validators import, got:\n%s", out)
 	}
@@ -158,6 +120,11 @@ func TestGenerateToDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := r.Generate(dir); err != nil {
 		t.Fatalf("Generate failed: %v", err)
+	}
+	for _, f := range []string{"types.gen.ts", "decoders.gen.ts", "registry.gen.ts"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("expected file %s to exist: %v", f, err)
+		}
 	}
 }
 
@@ -191,8 +158,7 @@ func TestGenerateConstants_Empty(t *testing.T) {
 	if err := r.Generate(dir); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
-	// constants.gen.ts should NOT be written when Constants is nil
-	_, err := os.Stat(dir + "/constants.gen.ts")
+	_, err := os.Stat(filepath.Join(dir, "constants.gen.ts"))
 	if !os.IsNotExist(err) {
 		t.Errorf("expected constants.gen.ts to not exist when Constants is empty, but it does")
 	}
@@ -203,8 +169,9 @@ func TestGenerateRegistry_SelfContained(t *testing.T) {
 		wiregen.WithValidatorsImport("./test-validators.js"),
 		wiregen.WithSelfContainedRegistry(true),
 	)
-	r.WireTypes = []reflect.Type{
-		reflect.TypeFor[Notification](),
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Notification](),
 	}
 	r.SSEEvents = []wiregen.SSERegEntry{
 		{EventType: "notification", TypeName: "Notification"},
@@ -230,8 +197,9 @@ func TestGenerate_SelfContained_NoBusImport(t *testing.T) {
 		wiregen.WithValidatorsImport("./test-validators.js"),
 		wiregen.WithSelfContainedRegistry(true),
 	)
-	r.WireTypes = []reflect.Type{
-		reflect.TypeFor[Notification](),
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Notification](),
 	}
 	r.SSEEvents = []wiregen.SSERegEntry{
 		{EventType: "notification", TypeName: "Notification"},
@@ -243,11 +211,10 @@ func TestGenerate_SelfContained_NoBusImport(t *testing.T) {
 }
 
 func TestPanicOnEmptyValidatorsImport(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes: []reflect.Type{
-			reflect.TypeFor[Notification](),
-		},
-		ValidatorsImport: "", // must panic
+	r := wiregen.NewRegistry()
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Notification](),
 	}
 	defer func() {
 		rec := recover()
@@ -263,16 +230,15 @@ func TestPanicOnEmptyValidatorsImport(t *testing.T) {
 }
 
 func TestPanicOnEmptyBusImport(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes: []reflect.Type{
-			reflect.TypeFor[Notification](),
-		},
-		SSEEvents: []wiregen.SSERegEntry{
-			{EventType: "notification", TypeName: "Notification"},
-		},
-		ValidatorsImport:      "./test-validators.js",
-		BusImport:             "", // must panic when SelfContainedRegistry is false
-		SelfContainedRegistry: false,
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./test-validators.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Notification](),
+	}
+	r.SSEEvents = []wiregen.SSERegEntry{
+		{EventType: "notification", TypeName: "Notification"},
 	}
 	defer func() {
 		rec := recover()
@@ -287,14 +253,13 @@ func TestPanicOnEmptyBusImport(t *testing.T) {
 	r.GenerateRegistry()
 }
 
-// --- New feature tests ---
-
 func TestUnexportedFieldsSkipped(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasUnexported]()},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
-	}
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasUnexported]()}
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "  name: string;") {
 		t.Errorf("exported field 'name' should be present, got:\n%s", out)
@@ -305,11 +270,12 @@ func TestUnexportedFieldsSkipped(t *testing.T) {
 }
 
 func TestByteSliceToString(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasBytes]()},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
-	}
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasBytes]()}
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "  data: string;") {
 		t.Errorf("[]byte should map to string, got:\n%s", out)
@@ -317,7 +283,6 @@ func TestByteSliceToString(t *testing.T) {
 	if strings.Contains(out, "number[]") {
 		t.Errorf("[]byte should NOT map to number[], got:\n%s", out)
 	}
-	// Decoder should use reqStr
 	dec := r.GenerateDecoders()
 	if !strings.Contains(dec, "reqStr(o, \"data\"") {
 		t.Errorf("[]byte decoder should use reqStr, got:\n%s", dec)
@@ -325,11 +290,12 @@ func TestByteSliceToString(t *testing.T) {
 }
 
 func TestOmitzeroMakesOptional(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasOmitzero]()},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
-	}
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasOmitzero]()}
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "  value?: string;") {
 		t.Errorf("omitzero field should be optional, got:\n%s", out)
@@ -340,16 +306,16 @@ func TestOmitzeroMakesOptional(t *testing.T) {
 }
 
 func TestJSONStringTag(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasJSONString]()},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
-	}
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasJSONString]()}
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "  big_id: string;") {
 		t.Errorf("json:\",string\" field should be typed as string, got:\n%s", out)
 	}
-	// Decoder should use reqStr for the string-wrapped field
 	dec := r.GenerateDecoders()
 	if !strings.Contains(dec, "reqStr(o, \"big_id\"") {
 		t.Errorf("json:\",string\" decoder should use reqStr, got:\n%s", dec)
@@ -357,12 +323,17 @@ func TestJSONStringTag(t *testing.T) {
 }
 
 func TestDecoderMappings(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasCustomMapped]()},
-		TypeMappings:     map[reflect.Type]string{reflect.TypeFor[CustomID](): "string"},
-		DecoderMappings:  map[reflect.Type]string{reflect.TypeFor[CustomID](): "reqStr"},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasCustomMapped]()}
+	r.TypeMappings = map[string]string{
+		"github.com/cplieger/wiregen/testdata/basic.CustomID": "string",
+	}
+	r.DecoderMappings = map[string]string{
+		"github.com/cplieger/wiregen/testdata/basic.CustomID": "reqStr",
 	}
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "  id: string;") {
@@ -375,14 +346,16 @@ func TestDecoderMappings(t *testing.T) {
 }
 
 func TestTypeMappingsWithoutDecoder(t *testing.T) {
-	r := &wiregen.Registry{
-		WireTypes:        []reflect.Type{reflect.TypeFor[HasCustomMapped]()},
-		TypeMappings:     map[reflect.Type]string{reflect.TypeFor[CustomID](): "string"},
-		ValidatorsImport: "./v.js",
-		BusImport:        "./b.js",
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasCustomMapped]()}
+	r.TypeMappings = map[string]string{
+		"github.com/cplieger/wiregen/testdata/basic.CustomID": "string",
 	}
 	dec := r.GenerateDecoders()
-	// Without DecoderMappings, should fall back to `as string` cast
 	if !strings.Contains(dec, "o[\"id\"] as string") {
 		t.Errorf("TypeMappings without DecoderMappings should cast, got:\n%s", dec)
 	}
@@ -394,7 +367,8 @@ func TestTypesImportPath(t *testing.T) {
 		wiregen.WithBusImport("./b.js"),
 		wiregen.WithTypesImportPath("../shared/types.gen.js"),
 	)
-	r.WireTypes = []reflect.Type{reflect.TypeFor[User]()}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.User]()}
 	r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
 	dec := r.GenerateDecoders()
 	if !strings.Contains(dec, `from "../shared/types.gen.js"`) {
@@ -405,42 +379,11 @@ func TestTypesImportPath(t *testing.T) {
 	}
 }
 
-// ExampleRegistry_Generate demonstrates basic wiregen usage for go doc.
-func ExampleRegistry_Generate() {
-	type Role string
-	type Person struct {
-		Name string `json:"name"`
-		Age  int    `json:"age"`
-		Role Role   `json:"role"`
-	}
-
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./validators.js"),
-		wiregen.WithBusImport("./bus.js"),
-	)
-	r.WireTypes = []reflect.Type{reflect.TypeFor[Person]()}
-	r.Enums = map[string]wiregen.EnumDef{"Role": {Values: []string{"admin", "user"}}}
-	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "person", TypeName: "Person"}}
-
-	fmt.Println(r.GenerateTypes())
-	// Output:
-	// // CODE-GENERATED by wiregen, DO NOT EDIT.
-	//
-	// export type Role = "admin" | "user";
-	//
-	// export interface Person {
-	//   name: string;
-	//   age: number;
-	//   role: Role;
-	// }
-	//
-}
-
 func TestNewRegistry_Defaults(t *testing.T) {
 	r := wiregen.NewRegistry()
-	r.WireTypes = []reflect.Type{reflect.TypeFor[Address]()}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 	r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
-	// Zero-value defaults should be applied by init()
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "// CODE-GENERATED by wiregen, DO NOT EDIT.") {
 		t.Errorf("expected default header comment, got:\n%s", out)
@@ -453,7 +396,8 @@ func TestNewRegistry_WithFilenames(t *testing.T) {
 		wiregen.WithBusImport("./b.js"),
 		wiregen.WithFilenames("my_types.ts", "my_decoders.ts", "my_registry.ts", "my_consts.ts"),
 	)
-	r.WireTypes = []reflect.Type{reflect.TypeFor[Address]()}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "addr", TypeName: "Address"}}
 	r.Constants = []wiregen.WireConst{{TSName: "X", Value: 1}}
 	dir := t.TempDir()
@@ -461,7 +405,7 @@ func TestNewRegistry_WithFilenames(t *testing.T) {
 		t.Fatalf("Generate failed: %v", err)
 	}
 	for _, f := range []string{"my_types.ts", "my_decoders.ts", "my_registry.ts", "my_consts.ts"} {
-		if _, err := os.Stat(dir + "/" + f); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("expected file %s to exist: %v", f, err)
 		}
 	}
@@ -474,7 +418,8 @@ func TestNewRegistry_WithRegistryFuncName(t *testing.T) {
 		wiregen.WithRegisterFuncName("myRegister"),
 		wiregen.WithRegistryFuncName("initAll"),
 	)
-	r.WireTypes = []reflect.Type{reflect.TypeFor[Notification]()}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Notification]()}
 	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "notif", TypeName: "Notification"}}
 	out := r.GenerateRegistry()
 	if !strings.Contains(out, "myRegister") {
@@ -483,4 +428,170 @@ func TestNewRegistry_WithRegistryFuncName(t *testing.T) {
 	if !strings.Contains(out, "export function initAll()") {
 		t.Errorf("expected custom registry func name, got:\n%s", out)
 	}
+}
+
+// --- Union tests ---
+
+func TestUnionType(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/unions"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[unions.CoverageEvent](),
+		wiregen.TypeRef[unions.NotifyEvent](),
+		wiregen.TypeRef[unions.ScanEvent](),
+	}
+	// Register EventData as an interface type with union directive
+	r.Types = append(r.Types, wiregen.WireType{
+		PkgPath: "github.com/cplieger/wiregen/testdata/unions",
+		Name:    "EventData",
+	})
+	r.DiscriminatorMap = map[string]map[string]string{
+		"EventData": {
+			"coverage":   "CoverageEvent",
+			"notify":     "NotifyEvent",
+			"scan:start": "ScanEvent",
+			"scan:done":  "ScanEvent",
+		},
+	}
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "export type EventData = CoverageEvent | NotifyEvent | ScanEvent;") {
+		t.Errorf("missing union type, got:\n%s", out)
+	}
+	if !strings.Contains(out, "export interface CoverageEvent {") {
+		t.Errorf("missing CoverageEvent interface, got:\n%s", out)
+	}
+
+	dec := r.GenerateDecoders()
+	if !strings.Contains(dec, "case \"coverage\": return decodeCoverageEvent(v);") {
+		t.Errorf("missing union decoder case, got:\n%s", dec)
+	}
+	if !strings.Contains(dec, "case \"notify\": return decodeNotifyEvent(v);") {
+		t.Errorf("missing notify case, got:\n%s", dec)
+	}
+}
+
+// --- JSDoc/Comment tests ---
+
+func TestJSDocPassthrough(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.User]()}
+	r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "/**") {
+		t.Errorf("expected JSDoc comment in output, got:\n%s", out)
+	}
+}
+
+// --- Determinism tests ---
+
+func TestDeterministicOutput(t *testing.T) {
+	for i := range 5 {
+		r := newRegistry()
+		out1 := r.GenerateTypes()
+		r2 := newRegistry()
+		out2 := r2.GenerateTypes()
+		if out1 != out2 {
+			t.Fatalf("non-deterministic output on run %d", i)
+		}
+	}
+}
+
+func TestDeterministicOutput_ShuffledRegistration(t *testing.T) {
+	makeReg := func(types []wiregen.WireType) *wiregen.Registry {
+		r := wiregen.NewRegistry(
+			wiregen.WithValidatorsImport("./v.js"),
+			wiregen.WithBusImport("./b.js"),
+		)
+		r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+		r.Types = types
+		r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
+		return r
+	}
+
+	order1 := []wiregen.WireType{
+		wiregen.TypeRef[basic.User](),
+		wiregen.TypeRef[basic.Address](),
+		wiregen.TypeRef[basic.Notification](),
+	}
+	order2 := []wiregen.WireType{
+		wiregen.TypeRef[basic.Notification](),
+		wiregen.TypeRef[basic.User](),
+		wiregen.TypeRef[basic.Address](),
+	}
+
+	r1 := makeReg(order1)
+	r2 := makeReg(order2)
+
+	if r1.GenerateTypes() != r2.GenerateTypes() {
+		t.Error("output differs with shuffled type registration order")
+	}
+}
+
+// --- Golden file tests ---
+
+func TestGolden_Types(t *testing.T) {
+	r := newRegistry()
+	r.Types = append(r.Types,
+		wiregen.TypeRef[basic.HasTime](),
+		wiregen.TypeRef[basic.HasBytes](),
+		wiregen.TypeRef[basic.HasMap](),
+		wiregen.TypeRef[basic.WithEmbedding](),
+	)
+	got := r.GenerateTypes()
+	goldenCompare(t, "testdata/golden/types.gen.ts", got)
+}
+
+func TestGolden_Decoders(t *testing.T) {
+	r := newRegistry()
+	r.Types = append(r.Types,
+		wiregen.TypeRef[basic.HasTime](),
+		wiregen.TypeRef[basic.HasBytes](),
+		wiregen.TypeRef[basic.HasMap](),
+		wiregen.TypeRef[basic.WithEmbedding](),
+	)
+	got := r.GenerateDecoders()
+	goldenCompare(t, "testdata/golden/decoders.gen.ts", got)
+}
+
+func goldenCompare(t *testing.T, path, got string) {
+	t.Helper()
+	if *update {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("golden file %s not found (run with -update to create): %v", path, err)
+	}
+	if string(want) != got {
+		t.Errorf("output differs from golden file %s.\nGot:\n%s\nWant:\n%s", path, got, string(want))
+	}
+}
+
+// ExampleRegistry_Generate demonstrates basic wiregen usage.
+func ExampleRegistry_Generate() {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./validators.js"),
+		wiregen.WithBusImport("./bus.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		wiregen.TypeRef[basic.Address](),
+	}
+
+	fmt.Println(r.GenerateTypes() != "")
+	// Output:
+	// true
 }

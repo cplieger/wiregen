@@ -133,3 +133,214 @@ func FuzzEnumValueEscape(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSSERegEventType(f *testing.F) {
+	f.Add("user.created")
+	f.Add(`"; import("evil"); "`)
+	f.Add("a]b")
+	f.Add("new\nline")
+	f.Add(`quote"break`)
+	f.Add("back\\slash")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		r := &Registry{
+			ValidatorsImport:      "./v.js",
+			SelfContainedRegistry: true,
+			SSEEvents:             []SSERegEntry{{EventType: input, TypeName: "Dummy"}},
+			RegistryFuncName:      "register",
+		}
+		r.typeNames = map[string]bool{"Dummy": true}
+		var w strings.Builder
+		r.generateRegistry(&w)
+		out := w.String()
+
+		// Every line with registry.set must have balanced quotes
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "registry.set(") {
+				unescaped := 0
+				for i := 0; i < len(line); i++ {
+					if line[i] == '\\' {
+						i++
+						continue
+					}
+					if line[i] == '"' {
+						unescaped++
+					}
+				}
+				if unescaped%2 != 0 {
+					t.Errorf("unbalanced quotes for EventType=%q: line=%q", input, line)
+				}
+			}
+		}
+		// No raw newlines should appear inside a single line (output should not have broken lines)
+		if strings.ContainsAny(input, "\n\r") {
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, "registry.set(") && (strings.Contains(line, "\r") || strings.Contains(line, "\n")) {
+					t.Errorf("raw newline in output for EventType=%q", input)
+				}
+			}
+		}
+	})
+}
+
+func FuzzWireConstTSName(f *testing.F) {
+	f.Add("MaxRetries")
+	f.Add("export const evil = 0;\n//")
+	f.Add("123bad")
+	f.Add("")
+	f.Add("with spaces")
+	f.Add("foo\x00bar")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		r := &Registry{
+			Constants: []WireConst{{TSName: input, Value: 42}},
+		}
+		r.init()
+		var w strings.Builder
+		r.generateConstants(&w)
+		out := w.String()
+
+		// Every "export const X = ..." line must have valid identifier X
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "export const ") {
+				continue
+			}
+			rest := strings.TrimPrefix(line, "export const ")
+			parts := strings.SplitN(rest, " = ", 2)
+			ident := parts[0]
+			if !validTSIdent.MatchString(ident) {
+				t.Errorf("invalid identifier in output for TSName=%q: got %q", input, ident)
+			}
+		}
+	})
+}
+
+func FuzzImportPathInjection(f *testing.F) {
+	f.Add("./validators.js")
+	f.Add(`"; import("evil"); "`)
+	f.Add("path\nwith\nnewlines")
+	f.Add(`back\slash`)
+	f.Add("quote\"break")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		if input == "" {
+			t.Skip("empty import paths panic by design")
+		}
+		// Test ValidatorsImport in self-contained mode
+		r := &Registry{
+			ValidatorsImport:      input,
+			SelfContainedRegistry: true,
+			SSEEvents:             []SSERegEntry{{EventType: "test", TypeName: "Dummy"}},
+			RegistryFuncName:      "register",
+		}
+		r.typeNames = map[string]bool{"Dummy": true}
+		var w strings.Builder
+		r.generateRegistry(&w)
+		out := w.String()
+
+		// The import line must have balanced quotes
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "from \"") {
+				unescaped := 0
+				for i := 0; i < len(line); i++ {
+					if line[i] == '\\' {
+						i++
+						continue
+					}
+					if line[i] == '"' {
+						unescaped++
+					}
+				}
+				if unescaped%2 != 0 {
+					t.Errorf("unbalanced quotes for import path=%q: line=%q", input, line)
+				}
+			}
+		}
+
+		// Test BusImport in non-self-contained mode
+		r2 := &Registry{
+			BusImport:        input,
+			RegisterFuncName: "reg",
+			RegistryFuncName: "register",
+			SSEEvents:        []SSERegEntry{{EventType: "test", TypeName: "Dummy"}},
+		}
+		r2.typeNames = map[string]bool{"Dummy": true}
+		var w2 strings.Builder
+		r2.generateRegistry(&w2)
+		out2 := w2.String()
+
+		for _, line := range strings.Split(out2, "\n") {
+			if strings.Contains(line, "from \"") {
+				unescaped := 0
+				for i := 0; i < len(line); i++ {
+					if line[i] == '\\' {
+						i++
+						continue
+					}
+					if line[i] == '"' {
+						unescaped++
+					}
+				}
+				if unescaped%2 != 0 {
+					t.Errorf("unbalanced quotes for BusImport path=%q: line=%q", input, line)
+				}
+			}
+		}
+	})
+}
+
+func FuzzPathNameOverride(f *testing.F) {
+	f.Add("custom_path")
+	f.Add(`"; import("evil"); "`)
+	f.Add("path\ninjection")
+	f.Add(`back\slash`)
+	f.Add("quote\"break")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		r := &Registry{
+			PathNameOverride: map[string]string{"Test": input},
+		}
+		r.init()
+		result := r.pathName("Test")
+		// Must not contain raw newlines or unescaped quotes
+		if strings.ContainsAny(result, "\n\r") {
+			t.Errorf("pathName override contains raw newline for %q: %q", input, result)
+		}
+		// When embedded in "$.X", quotes must be balanced
+		literal := "\"$." + result + "\""
+		unescaped := 0
+		for i := 0; i < len(literal); i++ {
+			if literal[i] == '\\' {
+				i++
+				continue
+			}
+			if literal[i] == '"' {
+				unescaped++
+			}
+		}
+		if unescaped != 2 {
+			t.Errorf("pathName(%q) produces unbalanced quotes (%d): %q", input, unescaped, literal)
+		}
+	})
+}
+
+func FuzzEnumConstName(f *testing.F) {
+	f.Add("Status")
+	f.Add("123invalid")
+	f.Add("")
+	f.Add("with spaces")
+	f.Add("export type Evil = never;\n//")
+	f.Add("foo\x00bar")
+
+	f.Fuzz(func(t *testing.T, input string) {
+		r := &Registry{
+			Enums:      map[string]EnumDef{"TestEnum": {Values: []string{"a", "b"}}},
+			EnumTSName: map[string]string{"TestEnum": input},
+		}
+		r.init()
+		result := r.tsEnumName("TestEnum")
+		if !validTSIdent.MatchString(result) {
+			t.Errorf("tsEnumName with override %q = %q, not a valid TS identifier", input, result)
+		}
+	})
+}

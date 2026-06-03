@@ -317,7 +317,11 @@ func (r *Registry) tsName(goName string) string {
 
 func (r *Registry) tsEnumName(goName string) string {
 	if override, ok := r.EnumTSName[goName]; ok {
-		return override
+		s := sanitizeVarName(override)
+		if s == "" {
+			return goName
+		}
+		return s
 	}
 	return goName
 }
@@ -328,7 +332,7 @@ func (r *Registry) decoderName(typeName string) string {
 
 func (r *Registry) pathName(typeName string) string {
 	if override, ok := r.PathNameOverride[typeName]; ok {
-		return override
+		return tsStringLiteral(override)
 	}
 	var b strings.Builder
 	runes := []rune(typeName)
@@ -370,6 +374,20 @@ func (r *Registry) enumConstName(goTypeName string) string {
 		}
 	}
 	b.WriteString("S")
+	return b.String()
+}
+
+// sanitizeTSIdent strips characters that are not valid in a TS identifier,
+// preserving case and underscores (unlike sanitizeVarName which camelCases).
+func sanitizeTSIdent(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$' {
+			b.WriteRune(r)
+		} else if b.Len() > 0 && r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
 	return b.String()
 }
 

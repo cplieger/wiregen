@@ -132,7 +132,7 @@ func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 		w.WriteString(strings.Join(usedHelpers, ", "))
 		w.WriteString(", ")
 	}
-	w.WriteString("type Decoder } from \"" + r.ValidatorsImport + "\";\n")
+	w.WriteString("type Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n")
 
 	// Types import
 	candidateNames := make([]string, 0)
@@ -419,22 +419,22 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 
 	if r.SelfContainedRegistry {
 		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n")
-		w.WriteString("import type { Decoder } from \"" + r.ValidatorsImport + "\";\n\n")
+		w.WriteString("import type { Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n\n")
 		w.WriteString("const registry = new Map<string, Decoder<unknown>>();\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
 		for _, e := range r.SSEEvents {
-			w.WriteString("  registry.set(\"" + e.EventType + "\", " + r.decoderName(e.TypeName) + " as Decoder<unknown>);\n")
+			w.WriteString("  registry.set(\"" + tsStringLiteral(e.EventType) + "\", " + r.decoderName(e.TypeName) + " as Decoder<unknown>);\n")
 		}
 		w.WriteString("}\n\n")
 		w.WriteString("export function getSSEDecoder(eventType: string): Decoder<unknown> | undefined {\n")
 		w.WriteString("  return registry.get(eventType);\n")
 		w.WriteString("}\n")
 	} else {
-		w.WriteString("import { " + r.RegisterFuncName + " } from \"" + r.BusImport + "\";\n")
+		w.WriteString("import { " + r.RegisterFuncName + " } from \"" + tsStringLiteral(r.BusImport) + "\";\n")
 		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
 		for _, e := range r.SSEEvents {
-			w.WriteString("  " + r.RegisterFuncName + "(\"" + e.EventType + "\", " + r.decoderName(e.TypeName) + ");\n")
+			w.WriteString("  " + r.RegisterFuncName + "(\"" + tsStringLiteral(e.EventType) + "\", " + r.decoderName(e.TypeName) + ");\n")
 		}
 		w.WriteString("}\n")
 	}
@@ -445,6 +445,10 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 func (r *Registry) generateConstants(w *strings.Builder) {
 	w.WriteString(r.HeaderComment)
 	for _, c := range r.Constants {
-		fmt.Fprintf(w, "export const %s = %d;\n", c.TSName, c.Value)
+		name := sanitizeTSIdent(c.TSName)
+		if name == "" {
+			continue
+		}
+		fmt.Fprintf(w, "export const %s = %d;\n", name, c.Value)
 	}
 }

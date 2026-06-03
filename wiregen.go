@@ -317,7 +317,11 @@ func (r *Registry) tsName(goName string) string {
 
 func (r *Registry) tsEnumName(goName string) string {
 	if override, ok := r.EnumTSName[goName]; ok {
-		return override
+		s := sanitizeVarName(override)
+		if s == "" {
+			return goName
+		}
+		return s
 	}
 	return goName
 }
@@ -328,7 +332,7 @@ func (r *Registry) decoderName(typeName string) string {
 
 func (r *Registry) pathName(typeName string) string {
 	if override, ok := r.PathNameOverride[typeName]; ok {
-		return override
+		return tsStringLiteral(override)
 	}
 	var b strings.Builder
 	runes := []rune(typeName)
@@ -373,6 +377,20 @@ func (r *Registry) enumConstName(goTypeName string) string {
 	return b.String()
 }
 
+// sanitizeTSIdent strips characters that are not valid in a TS identifier,
+// preserving case and underscores (unlike sanitizeVarName which camelCases).
+func sanitizeTSIdent(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$' {
+			b.WriteRune(r)
+		} else if b.Len() > 0 && r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func sanitizeVarName(wireName string) string {
 	parts := strings.Split(wireName, "_")
 	var b strings.Builder
@@ -384,12 +402,51 @@ func sanitizeVarName(wireName string) string {
 		}
 	}
 	s := b.String()
+
+	// Strip characters that are not valid in a TS identifier
+	var clean strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$' {
+			clean.WriteRune(r)
+		} else if clean.Len() > 0 && r >= '0' && r <= '9' {
+			clean.WriteRune(r)
+		}
+	}
+	s = clean.String()
+	if s == "" {
+		return ""
+	}
+
 	switch s {
 	case "o", "out", "v", "private", "public", "protected", "class",
 		"return", "delete", "default", "export", "import", "new", "this":
 		return s + "Val"
 	}
 	return s
+}
+
+// tsStringLiteral escapes a string for safe embedding in a TS double-quoted string literal.
+func tsStringLiteral(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '`':
+			b.WriteRune('`')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func isIdentReferenced(body, ident string) bool {

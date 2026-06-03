@@ -490,7 +490,15 @@ func parseUnionDirective(cg *ast.CommentGroup) *UnionDef {
 				ud.Variants = strings.Split(kv[1], ",")
 			}
 		}
-		if len(ud.Variants) > 0 {
+		// Filter out empty variants
+		var filtered []string
+		for _, v := range ud.Variants {
+			if v != "" {
+				filtered = append(filtered, v)
+			}
+		}
+		ud.Variants = filtered
+		if ud.Discriminator != "" && len(ud.Variants) > 0 {
 			return ud
 		}
 	}
@@ -528,6 +536,10 @@ func commentToJSDoc(cg *ast.CommentGroup) string {
 	}
 	if len(nonEmpty) == 0 {
 		return ""
+	}
+	// Sanitize: replace */ with *\/ to prevent premature JSDoc close
+	for i, l := range nonEmpty {
+		nonEmpty[i] = strings.ReplaceAll(l, "*/", "*\\/")
 	}
 	if len(nonEmpty) == 1 {
 		return "/** " + nonEmpty[0] + " */\n"

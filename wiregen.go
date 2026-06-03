@@ -384,12 +384,51 @@ func sanitizeVarName(wireName string) string {
 		}
 	}
 	s := b.String()
+
+	// Strip characters that are not valid in a TS identifier
+	var clean strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$' {
+			clean.WriteRune(r)
+		} else if clean.Len() > 0 && r >= '0' && r <= '9' {
+			clean.WriteRune(r)
+		}
+	}
+	s = clean.String()
+	if s == "" {
+		return ""
+	}
+
 	switch s {
 	case "o", "out", "v", "private", "public", "protected", "class",
 		"return", "delete", "default", "export", "import", "new", "this":
 		return s + "Val"
 	}
 	return s
+}
+
+// tsStringLiteral escapes a string for safe embedding in a TS double-quoted string literal.
+func tsStringLiteral(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '`':
+			b.WriteRune('`')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func isIdentReferenced(body, ident string) bool {

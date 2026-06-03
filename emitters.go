@@ -37,7 +37,7 @@ func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 			if i > 0 {
 				w.WriteString(" | ")
 			}
-			w.WriteString("\"" + v + "\"")
+			w.WriteString("\"" + tsStringLiteral(v) + "\"")
 		}
 		w.WriteString(";\n\n")
 	}
@@ -182,7 +182,7 @@ func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 			if i > 0 {
 				w.WriteString(", ")
 			}
-			w.WriteString("\"" + v + "\"")
+			w.WriteString("\"" + tsStringLiteral(v) + "\"")
 		}
 		w.WriteString("] as const;\n")
 	}

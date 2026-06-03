@@ -155,7 +155,7 @@ func FuzzSSERegEventType(f *testing.F) {
 		out := w.String()
 
 		// Every line with registry.set must have balanced quotes
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			if strings.Contains(line, "registry.set(") {
 				unescaped := 0
 				for i := 0; i < len(line); i++ {
@@ -174,7 +174,7 @@ func FuzzSSERegEventType(f *testing.F) {
 		}
 		// No raw newlines should appear inside a single line (output should not have broken lines)
 		if strings.ContainsAny(input, "\n\r") {
-			for _, line := range strings.Split(out, "\n") {
+			for line := range strings.SplitSeq(out, "\n") {
 				if strings.Contains(line, "registry.set(") && (strings.Contains(line, "\r") || strings.Contains(line, "\n")) {
 					t.Errorf("raw newline in output for EventType=%q", input)
 				}
@@ -201,7 +201,7 @@ func FuzzWireConstTSName(f *testing.F) {
 		out := w.String()
 
 		// Every "export const X = ..." line must have valid identifier X
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			if !strings.HasPrefix(line, "export const ") {
 				continue
 			}
@@ -239,7 +239,7 @@ func FuzzImportPathInjection(f *testing.F) {
 		out := w.String()
 
 		// The import line must have balanced quotes
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			if strings.Contains(line, "from \"") {
 				unescaped := 0
 				for i := 0; i < len(line); i++ {
@@ -269,7 +269,7 @@ func FuzzImportPathInjection(f *testing.F) {
 		r2.generateRegistry(&w2)
 		out2 := w2.String()
 
-		for _, line := range strings.Split(out2, "\n") {
+		for line := range strings.SplitSeq(out2, "\n") {
 			if strings.Contains(line, "from \"") {
 				unescaped := 0
 				for i := 0; i < len(line); i++ {

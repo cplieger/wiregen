@@ -283,6 +283,12 @@ func (r *Registry) reqExpr(f *fieldInfo, path string) string {
 		return "decodeRecord(o[\"" + f.WireName + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\")"
 	}
 
+	// Unresolved type (e.g. an unregistered nested struct) — pass through as
+	// unknown rather than mis-decoding it as a number.
+	if f.TSType == tsUnknown {
+		return "o[\"" + f.WireName + "\"] as unknown"
+	}
+
 	// Primitive
 	return primHelperAST(f.TSType, false) + "(o, \"" + f.WireName + "\", \"" + path + "\")"
 }
@@ -329,6 +335,12 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 	}
 	if f.IsMap {
 		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = decodeRecord(o[\"" + f.WireName + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\");\n")
+		return
+	}
+
+	// Unresolved type — pass through as unknown rather than optNum.
+	if f.TSType == tsUnknown {
+		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = o[\"" + f.WireName + "\"] as unknown;\n")
 		return
 	}
 

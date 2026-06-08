@@ -234,8 +234,8 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 
 		fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth, allPkgs)
 
-		// Get field doc comment from AST
-		fi.Doc = e.findFieldDoc(pkg, f.Name(), st, allPkgs)
+		// Get field doc comment from AST (scoped to this field's declaration)
+		fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
 
 		raw = append(raw, rawField{info: fi, index: len(raw)})
 	}
@@ -368,7 +368,12 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		elemFI := e.resolveFieldType(elem, "", false, false, 0, nil)
 		fi.TSType = elemFI.TSType + "[]"
 		fi.SliceElem = elemFI.TSType
-		fi.GoTypeName = typeKey(elem)
+		// elemFI.GoTypeName is already keyed correctly: the short Go name for a
+		// registered struct/enum (matches r.typeNames / r.Enums) or the full
+		// importpath.Type for a mapped type (matches Type/DecoderMappings).
+		// Using typeKey(elem) here would always be the full name and miss the
+		// short-keyed struct/enum lookups in elemDecoderExpr.
+		fi.GoTypeName = elemFI.GoTypeName
 		return fi
 
 	case *types.Map:
@@ -377,7 +382,8 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0, nil)
 		fi.TSType = "Record<string, " + valFI.TSType + ">"
 		fi.MapVal = valFI.TSType
-		fi.GoTypeName = typeKey(ut.Elem())
+		// See the slice case: use the element's resolved key, not typeKey(elem).
+		fi.GoTypeName = valFI.GoTypeName
 		return fi
 
 	case *types.Interface:
@@ -403,35 +409,50 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 	return fi
 }
 
-func (e *astEngine) findFieldDoc(pkg *packages.Package, fieldName string, _ *types.Struct, allPkgs map[string]*packages.Package) string {
-	// Search through AST files for the field doc
+func (e *astEngine) findFieldDoc(fieldObj *types.Var, fallback *packages.Package, allPkgs map[string]*packages.Package) string {
+	pos := fieldObj.Pos()
+	if !pos.IsValid() {
+		return ""
+	}
+	// Search the package where the field is declared (handles fields embedded
+	// from another package); fall back to the type's own package.
+	pkg := fallback
+	if fieldObj.Pkg() != nil {
+		if p, ok := allPkgs[fieldObj.Pkg().Path()]; ok {
+			pkg = p
+		}
+	}
+	if pkg == nil {
+		return ""
+	}
 	for _, f := range pkg.Syntax {
-		doc := findFieldDocInFile(f, fieldName)
-		if doc != "" {
+		if doc := fieldDocAtPos(f, pos); doc != "" {
 			return doc
 		}
 	}
-	// Also check imported packages
-	_ = allPkgs
 	return ""
 }
 
-func findFieldDocInFile(file *ast.File, fieldName string) string {
+// fieldDocAtPos returns the JSDoc for the struct field whose name identifier is
+// at pos. Position-scoping ties the doc to the exact field declaration, so a
+// field doc is never taken from a different same-named field elsewhere in the
+// package.
+func fieldDocAtPos(file *ast.File, pos token.Pos) string {
 	var result string
 	ast.Inspect(file, func(n ast.Node) bool {
 		if result != "" {
 			return false
 		}
-		st, ok := n.(*ast.StructType)
+		field, ok := n.(*ast.Field)
 		if !ok {
 			return true
 		}
-		for _, field := range st.Fields.List {
-			for _, name := range field.Names {
-				if name.Name == fieldName && field.Doc != nil {
+		for _, name := range field.Names {
+			if name.Pos() == pos {
+				if field.Doc != nil {
 					result = commentToJSDoc(field.Doc)
-					return false
 				}
+				return false
 			}
 		}
 		return true

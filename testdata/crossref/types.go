@@ -3,6 +3,12 @@
 // unresolved-type fallback — the regressions fixed alongside these tests.
 package crossref
 
+import "github.com/cplieger/wiregen/testdata/crossref/dep"
+
+// _ forces dep into the loaded package graph as a transitive dependency, so
+// the enum-discovery scoping test has a same-named (dep.Color) type to ignore.
+var _ = dep.DepRed
+
 // Item is a registered struct used as a slice and map element.
 type Item struct {
 	ID   string `json:"id"`
@@ -41,4 +47,19 @@ type Unregistered struct {
 type Outer struct {
 	Known  string       `json:"known"`
 	Nested Unregistered `json:"nested"`
+}
+
+// Color is a string enum with a const block — used to test enum-value
+// auto-discovery from source (declared red, green, blue in that order).
+type Color string
+
+const (
+	ColorRed   Color = "red"
+	ColorGreen Color = "green"
+	ColorBlue  Color = "blue"
+)
+
+// Palette references Color so the engine loads + resolves the enum.
+type Palette struct {
+	Primary Color `json:"primary"`
 }

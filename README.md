@@ -38,13 +38,11 @@ func main() {
 		wiregen.WithBusImport("./bus.js"),
 	)
 
-	// PackagePaths tells the AST engine which packages to load + parse.
-	r.PackagePaths = []string{"github.com/you/yourmod"}
+	// PackagePaths is optional — derived from the registered types when omitted.
 	// Types are registered by identity via TypeRef (no reflect.Type needed).
 	r.Types = []wiregen.WireType{wiregen.TypeRef[User]()}
-	r.Enums = map[string]wiregen.EnumDef{
-		"Status": {Values: []string{"active", "inactive"}},
-	}
+	// Enum Values are optional — auto-discovered from the type's const block.
+	r.Enums = map[string]wiregen.EnumDef{"Status": {}}
 	r.SSEEvents = []wiregen.SSERegEntry{
 		{EventType: "user", TypeName: "User"},
 	}
@@ -86,9 +84,9 @@ Payload types are set via exported fields after construction:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `PackagePaths` | `[]string` | Import paths the AST engine loads + parses. Must cover the packages of every registered type. |
+| `PackagePaths` | `[]string` | Import paths the AST engine loads + parses. **Optional** — derived from the registered types' packages when omitted. |
 | `Types` | `[]WireType` | Go types to generate TS interfaces and decoders for. Register via `TypeRef[T]()`. |
-| `Enums` | `map[string]EnumDef` | Named string enums with their valid values (keyed by Go type name). |
+| `Enums` | `map[string]EnumDef` | Named string enums (keyed by Go type name). `Values` is **optional** — auto-discovered from the type's `const` block (source order) when omitted; explicit `Values` win. |
 | `EnumTSName` | `map[string]string` | Override the TS name for an enum (Go name → TS name). |
 | `TSNameOverride` | `map[string]string` | Override the TS interface name for a struct (Go name → TS name). |
 | `PathNameOverride` | `map[string]string` | Override the decoder path segment for a type (keyed by TS name). |
@@ -166,6 +164,9 @@ The consumer's validators module (at `ValidatorsImport`) must export:
 - **`json:",string"`** causes the field to be typed as `string` and decoded with `reqStr`/`optStr`, matching `encoding/json`'s string-wrapping behavior for numbers and booleans.
 - **Map keys** are always `string` in generated TS because JSON object keys are strings regardless of the Go map key type.
 - **Embedded structs** are flattened into the embedding interface (matching `encoding/json`).
+- **`Generate`** writes `types.gen.ts` + `decoders.gen.ts` always; `registry.gen.ts` only when there are SSE events; `constants.gen.ts` only when there are constants.
+- **`PackagePaths`** defaults to the distinct packages of the registered types; set it explicitly only to load extra packages.
+- **Enum `Values`** are auto-discovered from the named type's `const` declarations (in source order) when left empty; provide them explicitly to override the set or order.
 
 ## Unsupported by design
 

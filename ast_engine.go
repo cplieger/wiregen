@@ -3,6 +3,7 @@ package wiregen
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"os"
@@ -108,6 +109,9 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 		visit(pkg)
 	}
 
+	// Auto-discover enum values from source for any enum with empty Values.
+	e.discoverEnumValues(pkgs)
+
 	// Resolve each registered type
 	for _, wt := range r.Types {
 		ti, err := e.resolveType(wt, allPkgs)
@@ -124,6 +128,70 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 	})
 
 	return e, nil
+}
+
+// discoverEnumValues populates Values for any registered enum whose Values are
+// empty, by collecting the string consts of the matching named type from the
+// root packages (those loaded from PackagePaths / the registered types — not
+// transitive deps, so a same-named enum type in a dependency like
+// regexp/syntax can't pollute the set), in source order. Explicit Values
+// always win, so consumers can override an enum with no backing const block
+// (or a different order).
+func (e *astEngine) discoverEnumValues(pkgs []*packages.Package) {
+	need := map[string]bool{}
+	for name, def := range e.r.Enums {
+		if len(def.Values) == 0 {
+			need[name] = true
+		}
+	}
+	if len(need) == 0 {
+		return
+	}
+	type valPos struct {
+		val string
+		pos token.Pos
+	}
+	found := map[string][]valPos{}
+	for _, pkg := range pkgs {
+		if pkg.Types == nil {
+			continue
+		}
+		scope := pkg.Types.Scope()
+		for _, nm := range scope.Names() {
+			c, ok := scope.Lookup(nm).(*types.Const)
+			if !ok {
+				continue
+			}
+			named, ok := c.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			tn := named.Obj().Name()
+			if !need[tn] {
+				continue
+			}
+			if b, ok := named.Underlying().(*types.Basic); !ok || b.Info()&types.IsString == 0 {
+				continue
+			}
+			if c.Val().Kind() != constant.String {
+				continue
+			}
+			found[tn] = append(found[tn], valPos{constant.StringVal(c.Val()), c.Pos()})
+		}
+	}
+	for tn, vps := range found {
+		sort.Slice(vps, func(i, j int) bool { return vps[i].pos < vps[j].pos })
+		seen := map[string]bool{}
+		var vals []string
+		for _, vp := range vps {
+			if seen[vp.val] {
+				continue // dedup: exported + unexported consts can share a value
+			}
+			seen[vp.val] = true
+			vals = append(vals, vp.val)
+		}
+		e.r.Enums[tn] = EnumDef{Values: vals}
+	}
 }
 
 func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Package) (*typeInfo, error) {

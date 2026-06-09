@@ -241,10 +241,12 @@ func (r *Registry) Generate(outDir string) error {
 		return fmt.Errorf("write %s: %w", r.DecodersFilename, err)
 	}
 
-	var registryBuf strings.Builder
-	r.generateRegistry(&registryBuf)
-	if err := os.WriteFile(filepath.Join(outDir, r.RegistryFilename), []byte(registryBuf.String()), 0o644); err != nil { //nolint:gosec // generated TS is intentionally world-readable
-		return fmt.Errorf("write %s: %w", r.RegistryFilename, err)
+	if len(r.SSEEvents) > 0 {
+		var registryBuf strings.Builder
+		r.generateRegistry(&registryBuf)
+		if err := os.WriteFile(filepath.Join(outDir, r.RegistryFilename), []byte(registryBuf.String()), 0o644); err != nil { //nolint:gosec // generated TS is intentionally world-readable
+			return fmt.Errorf("write %s: %w", r.RegistryFilename, err)
+		}
 	}
 
 	if len(r.Constants) > 0 {

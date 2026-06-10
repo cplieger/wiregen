@@ -3,6 +3,7 @@ package wiregen
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"os"
@@ -108,6 +109,9 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 		visit(pkg)
 	}
 
+	// Auto-discover enum values from source for any enum with empty Values.
+	e.discoverEnumValues(pkgs)
+
 	// Resolve each registered type
 	for _, wt := range r.Types {
 		ti, err := e.resolveType(wt, allPkgs)
@@ -124,6 +128,70 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 	})
 
 	return e, nil
+}
+
+// discoverEnumValues populates Values for any registered enum whose Values are
+// empty, by collecting the string consts of the matching named type from the
+// root packages (those loaded from PackagePaths / the registered types — not
+// transitive deps, so a same-named enum type in a dependency like
+// regexp/syntax can't pollute the set), in source order. Explicit Values
+// always win, so consumers can override an enum with no backing const block
+// (or a different order).
+func (e *astEngine) discoverEnumValues(pkgs []*packages.Package) {
+	need := map[string]bool{}
+	for name, def := range e.r.Enums {
+		if len(def.Values) == 0 {
+			need[name] = true
+		}
+	}
+	if len(need) == 0 {
+		return
+	}
+	type valPos struct {
+		val string
+		pos token.Pos
+	}
+	found := map[string][]valPos{}
+	for _, pkg := range pkgs {
+		if pkg.Types == nil {
+			continue
+		}
+		scope := pkg.Types.Scope()
+		for _, nm := range scope.Names() {
+			c, ok := scope.Lookup(nm).(*types.Const)
+			if !ok {
+				continue
+			}
+			named, ok := c.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+			tn := named.Obj().Name()
+			if !need[tn] {
+				continue
+			}
+			if b, ok := named.Underlying().(*types.Basic); !ok || b.Info()&types.IsString == 0 {
+				continue
+			}
+			if c.Val().Kind() != constant.String {
+				continue
+			}
+			found[tn] = append(found[tn], valPos{constant.StringVal(c.Val()), c.Pos()})
+		}
+	}
+	for tn, vps := range found {
+		sort.Slice(vps, func(i, j int) bool { return vps[i].pos < vps[j].pos })
+		seen := map[string]bool{}
+		var vals []string
+		for _, vp := range vps {
+			if seen[vp.val] {
+				continue // dedup: exported + unexported consts can share a value
+			}
+			seen[vp.val] = true
+			vals = append(vals, vp.val)
+		}
+		e.r.Enums[tn] = EnumDef{Values: vals}
+	}
 }
 
 func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Package) (*typeInfo, error) {
@@ -234,8 +302,8 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 
 		fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth, allPkgs)
 
-		// Get field doc comment from AST
-		fi.Doc = e.findFieldDoc(pkg, f.Name(), st, allPkgs)
+		// Get field doc comment from AST (scoped to this field's declaration)
+		fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
 
 		raw = append(raw, rawField{info: fi, index: len(raw)})
 	}
@@ -368,7 +436,12 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		elemFI := e.resolveFieldType(elem, "", false, false, 0, nil)
 		fi.TSType = elemFI.TSType + "[]"
 		fi.SliceElem = elemFI.TSType
-		fi.GoTypeName = typeKey(elem)
+		// elemFI.GoTypeName is already keyed correctly: the short Go name for a
+		// registered struct/enum (matches r.typeNames / r.Enums) or the full
+		// importpath.Type for a mapped type (matches Type/DecoderMappings).
+		// Using typeKey(elem) here would always be the full name and miss the
+		// short-keyed struct/enum lookups in elemDecoderExpr.
+		fi.GoTypeName = elemFI.GoTypeName
 		return fi
 
 	case *types.Map:
@@ -377,7 +450,8 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0, nil)
 		fi.TSType = "Record<string, " + valFI.TSType + ">"
 		fi.MapVal = valFI.TSType
-		fi.GoTypeName = typeKey(ut.Elem())
+		// See the slice case: use the element's resolved key, not typeKey(elem).
+		fi.GoTypeName = valFI.GoTypeName
 		return fi
 
 	case *types.Interface:
@@ -403,35 +477,50 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 	return fi
 }
 
-func (e *astEngine) findFieldDoc(pkg *packages.Package, fieldName string, _ *types.Struct, allPkgs map[string]*packages.Package) string {
-	// Search through AST files for the field doc
+func (e *astEngine) findFieldDoc(fieldObj *types.Var, fallback *packages.Package, allPkgs map[string]*packages.Package) string {
+	pos := fieldObj.Pos()
+	if !pos.IsValid() {
+		return ""
+	}
+	// Search the package where the field is declared (handles fields embedded
+	// from another package); fall back to the type's own package.
+	pkg := fallback
+	if fieldObj.Pkg() != nil {
+		if p, ok := allPkgs[fieldObj.Pkg().Path()]; ok {
+			pkg = p
+		}
+	}
+	if pkg == nil {
+		return ""
+	}
 	for _, f := range pkg.Syntax {
-		doc := findFieldDocInFile(f, fieldName)
-		if doc != "" {
+		if doc := fieldDocAtPos(f, pos); doc != "" {
 			return doc
 		}
 	}
-	// Also check imported packages
-	_ = allPkgs
 	return ""
 }
 
-func findFieldDocInFile(file *ast.File, fieldName string) string {
+// fieldDocAtPos returns the JSDoc for the struct field whose name identifier is
+// at pos. Position-scoping ties the doc to the exact field declaration, so a
+// field doc is never taken from a different same-named field elsewhere in the
+// package.
+func fieldDocAtPos(file *ast.File, pos token.Pos) string {
 	var result string
 	ast.Inspect(file, func(n ast.Node) bool {
 		if result != "" {
 			return false
 		}
-		st, ok := n.(*ast.StructType)
+		field, ok := n.(*ast.Field)
 		if !ok {
 			return true
 		}
-		for _, field := range st.Fields.List {
-			for _, name := range field.Names {
-				if name.Name == fieldName && field.Doc != nil {
+		for _, name := range field.Names {
+			if name.Pos() == pos {
+				if field.Doc != nil {
 					result = commentToJSDoc(field.Doc)
-					return false
 				}
+				return false
 			}
 		}
 		return true

@@ -4,9 +4,9 @@
 
 # wiregen
 
-Generate TypeScript interfaces, decoders, and an SSE registry from Go types via reflection.
+Generate TypeScript interfaces, decoders, and an SSE registry from Go types via AST analysis.
 
-wiregen is a standalone Go library that, given a set of registered `reflect.Type` values and enum definitions, emits fully-typed TypeScript: interface declarations, runtime decoder functions with validation, and an SSE event→decoder registry. It has zero dependencies beyond the Go standard library.
+wiregen is a standalone Go library that, given a set of registered Go types and enum definitions, emits fully-typed TypeScript: interface declarations, runtime decoder functions with validation, and an SSE event→decoder registry. It analyzes your Go source with `go/packages` + `go/types` + `go/ast`, so it carries **doc comments through to JSDoc** on the generated interfaces. Its only build-time dependency is `golang.org/x/tools`; nothing it produces is a runtime dependency of your app.
 
 ## Install
 
@@ -21,15 +21,12 @@ Create a registry with `NewRegistry` (functional options configure behavior knob
 ```go
 package main
 
-import (
-	"reflect"
-
-	"github.com/cplieger/wiregen"
-)
+import "github.com/cplieger/wiregen"
 
 type Status string
 
 type User struct {
+	// ID is the user's unique identifier.
 	ID     int    `json:"id"`
 	Name   string `json:"name"`
 	Status Status `json:"status"`
@@ -41,11 +38,11 @@ func main() {
 		wiregen.WithBusImport("./bus.js"),
 	)
 
-	// Payload types are set via exported fields on the Registry.
-	r.WireTypes = []reflect.Type{reflect.TypeFor[User]()}
-	r.Enums = map[string]wiregen.EnumDef{
-		"Status": {Values: []string{"active", "inactive"}},
-	}
+	// PackagePaths is optional — derived from the registered types when omitted.
+	// Types are registered by identity via TypeRef (no reflect.Type needed).
+	r.Types = []wiregen.WireType{wiregen.TypeRef[User]()}
+	// Enum Values are optional — auto-discovered from the type's const block.
+	r.Enums = map[string]wiregen.EnumDef{"Status": {}}
 	r.SSEEvents = []wiregen.SSERegEntry{
 		{EventType: "user", TypeName: "User"},
 	}
@@ -55,6 +52,8 @@ func main() {
 	}
 }
 ```
+
+The `ID` doc comment above becomes a `/** ID is the user's unique identifier. */` JSDoc line on the generated `User` interface.
 
 ## API
 
@@ -85,15 +84,19 @@ Payload types are set via exported fields after construction:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `WireTypes` | `[]reflect.Type` | Go struct types to generate TS interfaces and decoders for. |
-| `Enums` | `map[string]EnumDef` | Named string enums with their valid values. |
+| `PackagePaths` | `[]string` | Import paths the AST engine loads + parses. **Optional** — derived from the registered types' packages when omitted. |
+| `Types` | `[]WireType` | Go types to generate TS interfaces and decoders for. Register via `TypeRef[T]()`. |
+| `Enums` | `map[string]EnumDef` | Named string enums (keyed by Go type name). `Values` is **optional** — auto-discovered from the type's `const` block (source order) when omitted; explicit `Values` win. |
 | `EnumTSName` | `map[string]string` | Override the TS name for an enum (Go name → TS name). |
-| `TSNameOverride` | `map[string]string` | Override the TS interface name for a struct. |
-| `PathNameOverride` | `map[string]string` | Override the decoder path segment for a type. |
-| `TypeMappings` | `map[reflect.Type]string` | Custom Go type → TS type overrides (e.g. `uuid.UUID` → `"string"`). |
-| `DecoderMappings` | `map[reflect.Type]string` | Custom Go type → decoder helper name. When set, the decoder emits a validation call instead of a bare cast. |
+| `TSNameOverride` | `map[string]string` | Override the TS interface name for a struct (Go name → TS name). |
+| `PathNameOverride` | `map[string]string` | Override the decoder path segment for a type (keyed by TS name). |
+| `TypeMappings` | `map[string]string` | Custom Go type → TS type overrides, keyed by full `importpath.Type` (e.g. `"…/uuid.UUID"` → `"string"`). |
+| `DecoderMappings` | `map[string]string` | Custom Go type → decoder helper name (full `importpath.Type` key). When set, the decoder emits a validation call instead of a bare cast. |
+| `DiscriminatorMap` | `map[string]map[string]string` | Per-union discriminator→variant decoder mapping; emit a union decoder for a sealed-interface union (see below). |
 | `SSEEvents` | `[]SSERegEntry` | Maps SSE event type strings to registered struct names. |
 | `Constants` | `[]WireConst` | Integer constants to emit into a constants file. |
+
+Discriminated unions are declared in Go **source** with a directive on the sealed interface — `//wiregen:union discriminator=type variants=A,B,C` — which emits `export type X = A | B | C`. A runtime union decoder `(disc: string, v: unknown) => X` is emitted only when `DiscriminatorMap[X]` is set.
 
 ### Methods
 
@@ -106,12 +109,27 @@ Payload types are set via exported fields after construction:
 ### Types
 
 ```go
+// WireType identifies a registered Go type by package path + name.
+type WireType struct {
+    PkgPath string
+    Name    string
+}
+
+// TypeRef registers a type by identity (the only use of reflect — for the
+// {PkgPath, Name} pair; the field walk is done from source via the AST).
+func TypeRef[T any]() WireType
+
 type WireConst struct {
     TSName string
     Value  int
 }
 
 type EnumDef struct{ Values []string }
+
+type UnionDef struct {
+    Discriminator string
+    Variants      []string
+}
 
 type SSERegEntry struct {
     EventType string
@@ -138,24 +156,28 @@ The consumer's validators module (at `ValidatorsImport`) must export:
 
 ## Behavior notes
 
+- **Doc comments** on registered structs and their fields are carried through to `/** … */` JSDoc on the generated interfaces (the AST engine reads them from source).
 - **Unexported fields** are skipped (matching `encoding/json` behavior).
+- **`time.Time`** maps to `string`; **`json.RawMessage`** and `interface{}` map to `unknown`.
 - **`[]byte`** maps to `string` (JSON encodes `[]byte` as base64).
 - **`omitzero`** (Go 1.24+) is treated the same as `omitempty` — the field becomes optional.
 - **`json:",string"`** causes the field to be typed as `string` and decoded with `reqStr`/`optStr`, matching `encoding/json`'s string-wrapping behavior for numbers and booleans.
 - **Map keys** are always `string` in generated TS because JSON object keys are strings regardless of the Go map key type.
+- **Embedded structs** are flattened into the embedding interface (matching `encoding/json`).
+- **`Generate`** writes `types.gen.ts` + `decoders.gen.ts` always; `registry.gen.ts` only when there are SSE events; `constants.gen.ts` only when there are constants.
+- **`PackagePaths`** defaults to the distinct packages of the registered types; set it explicitly only to load extra packages.
+- **Enum `Values`** are auto-discovered from the named type's `const` declarations (in source order) when left empty; provide them explicitly to override the set or order.
 
 ## Unsupported by design
 
-The following features are intentionally not supported due to architectural constraints of the reflect-based approach:
+The following are intentionally not supported:
 
 | Feature | Reason |
 |---------|--------|
-| **Go generics (type parameters)** | `reflect` cannot represent uninstantiated generic types. Register concrete instantiations instead. |
-| **Comment/doc passthrough** | `reflect` has no access to source comments. Would require AST parsing, contradicting the library's reflect-based design. |
-| **Union/discriminated-union types** | Go's type system doesn't express unions at the struct-field level via reflect. `interface{}` → `unknown` is the correct mapping. |
+| **Go generics (type parameters)** | The Go type system can't represent uninstantiated generic types here. Register concrete instantiations instead. |
 | **Nullable vs optional distinction** | `T \| null` vs `?:` — current consumers treat null and absent identically. Pointer/omitempty → optional only. |
 | **`tstype` struct tag hints** | `TypeMappings` provides the same escape hatch at the registry level. |
-| **Nested anonymous struct types** | Register inline structs as named `WireTypes` instead. |
+| **Inline anonymous struct fields** | A field whose type is an inline `struct { … }` literal maps to `unknown`. Register it as a named type instead. (Embedded _named_ structs are flattened, not unknown.) |
 
 ## License
 

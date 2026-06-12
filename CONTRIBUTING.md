@@ -66,7 +66,7 @@ sorted when you touch generation.
 
 ## Local development
 
-The module targets the Go version in `go.mod` (currently `go 1.26.4`) and
+The module targets the Go version in `go.mod` and
 has zero runtime dependencies — the only build-time dependency is
 `golang.org/x/tools`. Keep it that way.
 

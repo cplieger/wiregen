@@ -6,8 +6,6 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/wiregen/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/wiregen)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-# wiregen
-
 Generate TypeScript interfaces, decoders, and an SSE registry from Go types via AST analysis.
 
 wiregen is a standalone Go library that, given a set of registered Go types and enum definitions, emits fully-typed TypeScript: interface declarations, runtime decoder functions with validation, and an SSE event→decoder registry. It analyzes your Go source with `go/packages` + `go/types` + `go/ast`, so it carries **doc comments through to JSDoc** on the generated interfaces. Its only build-time dependency is `golang.org/x/tools`; nothing it produces is a runtime dependency of your app.

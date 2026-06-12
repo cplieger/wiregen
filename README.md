@@ -4,7 +4,6 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen.svg)](https://pkg.go.dev/github.com/cplieger/wiregen)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/wiregen)](https://goreportcard.com/report/github.com/cplieger/wiregen)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/wiregen/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/wiregen)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 Generate TypeScript interfaces, decoders, and an SSE registry from Go types via AST analysis.
 

@@ -104,11 +104,12 @@ Discriminated unions are declared in Go **source** with a directive on the seale
 
 ### Methods
 
-- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir`.
+- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir`. Does **not** write `validators.ts` by default (see `GenerateValidators` below).
 - `(*Registry).GenerateTypes() string` — returns types file content.
 - `(*Registry).GenerateDecoders() string` — returns decoders file content. Panics if `ValidatorsImport` is empty.
 - `(*Registry).GenerateRegistry() string` — returns registry file content. Panics if `BusImport` is empty and `SelfContainedRegistry` is false.
 - `(*Registry).GenerateConstants() string` — returns constants file content.
+- `(*Registry).GenerateValidators() string` — returns a starter `validators.ts` containing the full 11-function contract (`asObject`, `asArray`, `reqStr`, `reqNum`, `reqBool`, `optStr`, `optNum`, `optBool`, `reqOneOf<T>`, `decodeArray<T>`, `decodeRecord<T>`) plus the `Decoder<T>` type. The emitted file is consumer-editable (NOT stamped "DO NOT EDIT") — copy it once, then own it. **Opt-in only:** `Generate(outDir)` does not write `validators.ts`; consumers must explicitly call `GenerateValidators()` and write the result themselves.
 
 ### Types
 

@@ -308,6 +308,25 @@ func (r *Registry) GenerateConstants() string {
 	return b.String()
 }
 
+// GenerateValidators returns the opt-in validators starter module as a string:
+// the reference implementation of the "Validators contract" (the 11 helper
+// functions the generated decoders import — asObject, asArray, reqStr, reqNum,
+// reqBool, optStr, optNum, optBool, reqOneOf, decodeArray, decodeRecord — plus
+// the Decoder<T> type alias).
+//
+// Unlike the other Generate* methods, the content is constant (it does not
+// depend on the registered types) and the module carries a distinct "copy
+// once, then own it" banner instead of r.HeaderComment — it is a one-time
+// scaffold a NEW consumer copies once and then OWNS and edits freely. It is
+// never regenerated and is deliberately NOT part of Generate's default writes,
+// so an existing consumer's hand-edited copy is never clobbered.
+func (r *Registry) GenerateValidators() string {
+	r.init()
+	var b strings.Builder
+	r.generateValidators(&b)
+	return b.String()
+}
+
 // --- helpers ---
 
 func (r *Registry) tsName(goName string) string {

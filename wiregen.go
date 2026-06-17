@@ -113,7 +113,7 @@ func WithFilenames(types, decoders, registry, constants string) Option {
 }
 
 // Registry holds all type registrations for code generation.
-type Registry struct { //nolint:govet // fieldalignment: readability over alignment
+type Registry struct {
 	Enums                 map[string]EnumDef
 	EnumTSName            map[string]string
 	TSNameOverride        map[string]string
@@ -121,21 +121,21 @@ type Registry struct { //nolint:govet // fieldalignment: readability over alignm
 	TypeMappings          map[string]string
 	DecoderMappings       map[string]string
 	DiscriminatorMap      map[string]map[string]string
-	typeNames             map[string]bool // populated from Types for decoder cross-ref
-	PackagePaths          []string
-	Types                 []WireType
-	SSEEvents             []SSERegEntry
-	Constants             []WireConst
+	typeNames             map[string]bool
 	ValidatorsImport      string
+	TypesFilename         string
+	ConstantsFilename     string
+	RegistryFilename      string
+	DecodersFilename      string
 	BusImport             string
 	TypesImportPath       string
 	HeaderComment         string
 	RegisterFuncName      string
 	RegistryFuncName      string
-	TypesFilename         string
-	DecodersFilename      string
-	RegistryFilename      string
-	ConstantsFilename     string
+	Types                 []WireType
+	PackagePaths          []string
+	Constants             []WireConst
+	SSEEvents             []SSERegEntry
 	SelfContainedRegistry bool
 	initialized           bool
 }

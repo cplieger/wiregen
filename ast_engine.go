@@ -15,11 +15,11 @@ import (
 )
 
 // typeInfo holds resolved type data extracted from AST.
-type typeInfo struct { //nolint:govet // fieldalignment: readability over alignment
-	Fields []fieldInfo
+type typeInfo struct {
 	Union  *UnionDef
 	Name   string
-	Doc    string // JSDoc comment
+	Doc    string
+	Fields []fieldInfo
 	IsEnum bool
 }
 
@@ -43,10 +43,10 @@ type fieldInfo struct {
 }
 
 // astEngine loads Go packages and resolves type information from source.
-type astEngine struct { //nolint:govet // fieldalignment: readability over alignment
-	types  []*typeInfo // sorted by TS name
+type astEngine struct {
 	byName map[string]*typeInfo
 	r      *Registry
+	types  []*typeInfo
 }
 
 func newASTEngine(r *Registry) (*astEngine, error) {

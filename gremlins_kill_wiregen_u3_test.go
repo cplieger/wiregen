@@ -49,9 +49,9 @@ func Test_gk_wiregen_u3_isIdentChar_rangeBoundaries(t *testing.T) {
 		{name: "dollar", in: '$', want: true},
 		// chars one past each range top: rejected by the original; a flipped
 		// upper-bound <= (now >) would wrongly accept them.
-		{name: "above_z_brace", in: '{', want: false},  // 504:24 negation (false side)
+		{name: "above_z_brace", in: '{', want: false},   // 504:24 negation (false side)
 		{name: "above_Z_bracket", in: '[', want: false}, // 504:50 negation (false side)
-		{name: "above_9_colon", in: ':', want: false},  // 504:76 negation (false side)
+		{name: "above_9_colon", in: ':', want: false},   // 504:76 negation (false side)
 		// chars one below each range bottom and a plain separator: rejected.
 		{name: "below_a_backtick", in: '`', want: false},
 		{name: "below_A_at", in: '@', want: false},

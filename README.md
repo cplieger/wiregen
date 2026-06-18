@@ -71,34 +71,34 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 
 ### Functional options
 
-| Option | Description |
-|--------|-------------|
-| `WithValidatorsImport(v string)` | **Required.** Import path for the validators module. |
-| `WithBusImport(v string)` | **Required** (unless `WithSelfContainedRegistry(true)`). Import path for the bus module. |
-| `WithTypesImportPath(v string)` | Import path for the types file used in decoders (default: `"./types.gen.js"`). |
-| `WithHeaderComment(v string)` | Header comment prepended to every generated file. |
-| `WithRegisterFuncName(v string)` | Function name imported from the bus module (default: `"registerSSEDecoder"`). |
-| `WithRegistryFuncName(v string)` | Exported function name in the registry file (default: `"registerAllSSEDecoders"`). |
-| `WithSelfContainedRegistry(v bool)` | Use a self-contained Map-based registry instead of importing from BusImport. |
-| `WithFilenames(types, decoders, registry, constants string)` | Override output filenames (pass `""` to keep defaults). |
+| Option                                                       | Description                                                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `WithValidatorsImport(v string)`                             | **Required.** Import path for the validators module.                                     |
+| `WithBusImport(v string)`                                    | **Required** (unless `WithSelfContainedRegistry(true)`). Import path for the bus module. |
+| `WithTypesImportPath(v string)`                              | Import path for the types file used in decoders (default: `"./types.gen.js"`).           |
+| `WithHeaderComment(v string)`                                | Header comment prepended to every generated file.                                        |
+| `WithRegisterFuncName(v string)`                             | Function name imported from the bus module (default: `"registerSSEDecoder"`).            |
+| `WithRegistryFuncName(v string)`                             | Exported function name in the registry file (default: `"registerAllSSEDecoders"`).       |
+| `WithSelfContainedRegistry(v bool)`                          | Use a self-contained Map-based registry instead of importing from BusImport.             |
+| `WithFilenames(types, decoders, registry, constants string)` | Override output filenames (pass `""` to keep defaults).                                  |
 
 ### Registry fields (payload data)
 
 Payload types are set via exported fields after construction:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `PackagePaths` | `[]string` | Import paths the AST engine loads + parses. **Optional** — derived from the registered types' packages when omitted. |
-| `Types` | `[]WireType` | Go types to generate TS interfaces and decoders for. Register via `TypeRef[T]()`. |
-| `Enums` | `map[string]EnumDef` | Named string enums (keyed by Go type name). `Values` is **optional** — auto-discovered from the type's `const` block (source order) when omitted; explicit `Values` win. |
-| `EnumTSName` | `map[string]string` | Override the TS name for an enum (Go name → TS name). |
-| `TSNameOverride` | `map[string]string` | Override the TS interface name for a struct (Go name → TS name). |
-| `PathNameOverride` | `map[string]string` | Override the decoder path segment for a type (keyed by TS name). |
-| `TypeMappings` | `map[string]string` | Custom Go type → TS type overrides, keyed by full `importpath.Type` (e.g. `"…/uuid.UUID"` → `"string"`). |
-| `DecoderMappings` | `map[string]string` | Custom Go type → decoder helper name (full `importpath.Type` key). When set, the decoder emits a validation call instead of a bare cast. |
-| `DiscriminatorMap` | `map[string]map[string]string` | Per-union discriminator→variant decoder mapping; emit a union decoder for a sealed-interface union (see below). |
-| `SSEEvents` | `[]SSERegEntry` | Maps SSE event type strings to registered struct names. |
-| `Constants` | `[]WireConst` | Integer constants to emit into a constants file. |
+| Field              | Type                           | Description                                                                                                                                                              |
+| ------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PackagePaths`     | `[]string`                     | Import paths the AST engine loads + parses. **Optional** — derived from the registered types' packages when omitted.                                                     |
+| `Types`            | `[]WireType`                   | Go types to generate TS interfaces and decoders for. Register via `TypeRef[T]()`.                                                                                        |
+| `Enums`            | `map[string]EnumDef`           | Named string enums (keyed by Go type name). `Values` is **optional** — auto-discovered from the type's `const` block (source order) when omitted; explicit `Values` win. |
+| `EnumTSName`       | `map[string]string`            | Override the TS name for an enum (Go name → TS name).                                                                                                                    |
+| `TSNameOverride`   | `map[string]string`            | Override the TS interface name for a struct (Go name → TS name).                                                                                                         |
+| `PathNameOverride` | `map[string]string`            | Override the decoder path segment for a type (keyed by TS name).                                                                                                         |
+| `TypeMappings`     | `map[string]string`            | Custom Go type → TS type overrides, keyed by full `importpath.Type` (e.g. `"…/uuid.UUID"` → `"string"`).                                                                 |
+| `DecoderMappings`  | `map[string]string`            | Custom Go type → decoder helper name (full `importpath.Type` key). When set, the decoder emits a validation call instead of a bare cast.                                 |
+| `DiscriminatorMap` | `map[string]map[string]string` | Per-union discriminator→variant decoder mapping; emit a union decoder for a sealed-interface union (see below).                                                          |
+| `SSEEvents`        | `[]SSERegEntry`                | Maps SSE event type strings to registered struct names.                                                                                                                  |
+| `Constants`        | `[]WireConst`                  | Integer constants to emit into a constants file.                                                                                                                         |
 
 Discriminated unions are declared in Go **source** with a directive on the sealed interface — `//wiregen:union discriminator=type variants=A,B,C` — which emits `export type X = A | B | C`. A runtime union decoder `(disc: string, v: unknown) => X` is emitted only when `DiscriminatorMap[X]` is set.
 
@@ -177,12 +177,12 @@ The consumer's validators module (at `ValidatorsImport`) must export:
 
 The following are intentionally not supported:
 
-| Feature | Reason |
-|---------|--------|
-| **Go generics (type parameters)** | The Go type system can't represent uninstantiated generic types here. Register concrete instantiations instead. |
-| **Nullable vs optional distinction** | `T \| null` vs `?:` — current consumers treat null and absent identically. Pointer/omitempty → optional only. |
-| **`tstype` struct tag hints** | `TypeMappings` provides the same escape hatch at the registry level. |
-| **Inline anonymous struct fields** | A field whose type is an inline `struct { … }` literal maps to `unknown`. Register it as a named type instead. (Embedded _named_ structs are flattened, not unknown.) |
+| Feature                              | Reason                                                                                                                                                                |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Go generics (type parameters)**    | The Go type system can't represent uninstantiated generic types here. Register concrete instantiations instead.                                                       |
+| **Nullable vs optional distinction** | `T \| null` vs `?:` — current consumers treat null and absent identically. Pointer/omitempty → optional only.                                                         |
+| **`tstype` struct tag hints**        | `TypeMappings` provides the same escape hatch at the registry level.                                                                                                  |
+| **Inline anonymous struct fields**   | A field whose type is an inline `struct { … }` literal maps to `unknown`. Register it as a named type instead. (Embedded _named_ structs are flattened, not unknown.) |
 
 ## License
 

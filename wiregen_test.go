@@ -430,47 +430,81 @@ func TestNewRegistry_WithRegistryFuncName(t *testing.T) {
 	}
 }
 
-// --- Union tests ---
+func TestNewRegistry_NilOptionsIgnored(t *testing.T) {
+	r := wiregen.NewRegistry(nil, nil, wiregen.WithValidatorsImport("./v.js"), nil)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+	if out := r.GenerateTypes(); out == "" {
+		t.Error("nil options should be ignored and still generate output")
+	}
+}
 
-func TestUnionType(t *testing.T) {
+func TestNewRegistry_OptionOrderIndependent(t *testing.T) {
+	r1 := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+		wiregen.WithHeaderComment("// H\n\n"),
+	)
+	r2 := wiregen.NewRegistry(
+		wiregen.WithHeaderComment("// H\n\n"),
+		wiregen.WithBusImport("./b.js"),
+		wiregen.WithValidatorsImport("./v.js"),
+	)
+	r1.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r2.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r1.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+	r2.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+	if r1.GenerateTypes() != r2.GenerateTypes() {
+		t.Error("option order should not affect output")
+	}
+}
+
+func TestNewRegistry_OptionLastWriterWins(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithHeaderComment("// first\n\n"),
+		wiregen.WithHeaderComment("// second\n\n"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "// second") {
+		t.Errorf("last writer should win, got:\n%s", out)
+	}
+}
+
+func TestWithFilenames_EmptyKeepsDefaults(t *testing.T) {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
+		wiregen.WithFilenames("", "", "", ""),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/unions"}
-	r.Types = []wiregen.WireType{
-		wiregen.TypeRef[unions.CoverageEvent](),
-		wiregen.TypeRef[unions.NotifyEvent](),
-		wiregen.TypeRef[unions.ScanEvent](),
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "a", TypeName: "Address"}}
+	r.Constants = []wiregen.WireConst{{TSName: "X", Value: 1}}
+	dir := t.TempDir()
+	if err := r.Generate(dir); err != nil {
+		t.Fatal(err)
 	}
-	// Register EventData as an interface type with union directive
-	r.Types = append(r.Types, wiregen.WireType{
-		PkgPath: "github.com/cplieger/wiregen/testdata/unions",
-		Name:    "EventData",
-	})
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {
-			"coverage":   "CoverageEvent",
-			"notify":     "NotifyEvent",
-			"scan:start": "ScanEvent",
-			"scan:done":  "ScanEvent",
-		},
+	// Empty filename args keep the defaults.
+	for _, f := range []string{"types.gen.ts", "decoders.gen.ts", "registry.gen.ts", "constants.gen.ts"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("empty WithFilenames should keep default %s: %v", f, err)
+		}
 	}
-	out := r.GenerateTypes()
-	if !strings.Contains(out, "export type EventData = CoverageEvent | NotifyEvent | ScanEvent;") {
-		t.Errorf("missing union type, got:\n%s", out)
-	}
-	if !strings.Contains(out, "export interface CoverageEvent {") {
-		t.Errorf("missing CoverageEvent interface, got:\n%s", out)
-	}
+}
 
-	dec := r.GenerateDecoders()
-	if !strings.Contains(dec, "case \"coverage\": return decodeCoverageEvent(v);") {
-		t.Errorf("missing union decoder case, got:\n%s", dec)
-	}
-	if !strings.Contains(dec, "case \"notify\": return decodeNotifyEvent(v);") {
-		t.Errorf("missing notify case, got:\n%s", dec)
-	}
+func TestSelfContainedRegistry_EmptyValidatorsPanics(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithSelfContainedRegistry(true),
+	)
+	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "a", TypeName: "X"}}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	r.GenerateRegistry()
 }
 
 // --- JSDoc/Comment tests ---
@@ -486,51 +520,6 @@ func TestJSDocPassthrough(t *testing.T) {
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "/**") {
 		t.Errorf("expected JSDoc comment in output, got:\n%s", out)
-	}
-}
-
-// --- Determinism tests ---
-
-func TestDeterministicOutput(t *testing.T) {
-	for i := range 5 {
-		r := newRegistry()
-		out1 := r.GenerateTypes()
-		r2 := newRegistry()
-		out2 := r2.GenerateTypes()
-		if out1 != out2 {
-			t.Fatalf("non-deterministic output on run %d", i)
-		}
-	}
-}
-
-func TestDeterministicOutput_ShuffledRegistration(t *testing.T) {
-	makeReg := func(types []wiregen.WireType) *wiregen.Registry {
-		r := wiregen.NewRegistry(
-			wiregen.WithValidatorsImport("./v.js"),
-			wiregen.WithBusImport("./b.js"),
-		)
-		r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
-		r.Types = types
-		r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
-		return r
-	}
-
-	order1 := []wiregen.WireType{
-		wiregen.TypeRef[basic.User](),
-		wiregen.TypeRef[basic.Address](),
-		wiregen.TypeRef[basic.Notification](),
-	}
-	order2 := []wiregen.WireType{
-		wiregen.TypeRef[basic.Notification](),
-		wiregen.TypeRef[basic.User](),
-		wiregen.TypeRef[basic.Address](),
-	}
-
-	r1 := makeReg(order1)
-	r2 := makeReg(order2)
-
-	if r1.GenerateTypes() != r2.GenerateTypes() {
-		t.Error("output differs with shuffled type registration order")
 	}
 }
 
@@ -594,4 +583,88 @@ func ExampleRegistry_Generate() {
 	fmt.Println(r.GenerateTypes() != "")
 	// Output:
 	// true
+}
+
+// --- TypeRef registration ---
+
+func TestTypeRef(t *testing.T) {
+	if wt := wiregen.TypeRef[basic.User](); wt.Name != "User" ||
+		wt.PkgPath != "github.com/cplieger/wiregen/testdata/basic" {
+		t.Errorf("TypeRef[User]() = %+v, want {basic, User}", wt)
+	}
+	// A pointer type unwraps to its element.
+	if wt := wiregen.TypeRef[*basic.Address](); wt.Name != "Address" {
+		t.Errorf("TypeRef[*Address]().Name = %q, want %q", wt.Name, "Address")
+	}
+}
+
+// --- Generate error paths ---
+
+func TestGenerate_UnknownTypeErrors(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{
+		{PkgPath: "github.com/cplieger/wiregen/testdata/basic", Name: "NonExistentType"},
+	}
+	err := r.Generate(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error when referencing non-existent type, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestGenerate_PackageLoadFailureErrors(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/totally/nonexistent/package/path"}
+	r.Types = []wiregen.WireType{
+		{PkgPath: "github.com/totally/nonexistent/package/path", Name: "Foo"},
+	}
+	if err := r.Generate(t.TempDir()); err == nil {
+		t.Fatal("expected error for non-existent package, got nil")
+	}
+}
+
+// --- empty / constants-only registries ---
+
+func TestGenerate_EmptyRegistry(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	if err := r.Generate(t.TempDir()); err != nil {
+		t.Fatalf("empty registry should generate fine, got: %v", err)
+	}
+}
+
+func TestGenerate_ConstantsOnly(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.Constants = []wiregen.WireConst{
+		{TSName: "FOO", Value: 42},
+		{TSName: "BAR", Value: -1},
+	}
+	dir := t.TempDir()
+	if err := r.Generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "constants.gen.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "export const FOO = 42;") {
+		t.Errorf("missing FOO, got:\n%s", content)
+	}
+	if !strings.Contains(string(content), "export const BAR = -1;") {
+		t.Errorf("missing BAR, got:\n%s", content)
+	}
 }

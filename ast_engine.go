@@ -52,67 +52,28 @@ type astEngine struct {
 func newASTEngine(r *Registry) (*astEngine, error) {
 	e := &astEngine{r: r, byName: make(map[string]*typeInfo)}
 
+	// No types registered — return an empty engine (constants-only / registry-only use).
 	if len(r.Types) == 0 && len(r.PackagePaths) == 0 {
-		// No types registered — return empty engine (for constants-only, registry-only use)
 		return e, nil
 	}
-
-	// Load packages
-	pkgPaths := r.PackagePaths
-	if len(pkgPaths) == 0 {
-		// Derive package paths from registered types
-		seen := map[string]bool{}
-		for _, wt := range r.Types {
-			if wt.PkgPath != "" && !seen[wt.PkgPath] {
-				seen[wt.PkgPath] = true
-				pkgPaths = append(pkgPaths, wt.PkgPath)
-			}
-		}
-	}
-
+	pkgPaths := r.resolvePackagePaths()
 	if len(pkgPaths) == 0 {
 		return e, nil
 	}
 
-	cfg := &packages.Config{
-		Mode: packages.NeedSyntax | packages.NeedFiles | packages.NeedTypes |
-			packages.NeedTypesInfo | packages.NeedName | packages.NeedImports |
-			packages.NeedDeps,
-		Env: append(defaultEnv(), "CGO_ENABLED=0"),
-	}
-
-	pkgs, err := packages.Load(cfg, pkgPaths...)
+	pkgs, err := packages.Load(loadConfig(), pkgPaths...)
 	if err != nil {
 		return nil, fmt.Errorf("wiregen: load packages: %w", err)
 	}
-
-	// Check for package errors
-	for _, pkg := range pkgs {
-		for _, e := range pkg.Errors {
-			return nil, fmt.Errorf("wiregen: package %s: %s", pkg.PkgPath, e.Msg)
-		}
+	if err := packagesError(pkgs); err != nil {
+		return nil, err
 	}
-
-	// Build index of all packages (including deps)
-	allPkgs := make(map[string]*packages.Package)
-	var visit func(*packages.Package)
-	visit = func(p *packages.Package) {
-		if _, ok := allPkgs[p.PkgPath]; ok {
-			return
-		}
-		allPkgs[p.PkgPath] = p
-		for _, imp := range p.Imports {
-			visit(imp)
-		}
-	}
-	for _, pkg := range pkgs {
-		visit(pkg)
-	}
+	allPkgs := indexPackages(pkgs)
 
 	// Auto-discover enum values from source for any enum with empty Values.
 	e.discoverEnumValues(pkgs)
 
-	// Resolve each registered type
+	// Resolve each registered type.
 	for _, wt := range r.Types {
 		ti, err := e.resolveType(wt, allPkgs)
 		if err != nil {
@@ -122,12 +83,76 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 		e.types = append(e.types, ti)
 	}
 
-	// Sort by TS name for deterministic output
+	// Sort by TS name for deterministic output.
 	sort.Slice(e.types, func(i, j int) bool {
 		return r.tsName(e.types[i].Name) < r.tsName(e.types[j].Name)
 	})
-
 	return e, nil
+}
+
+// resolvePackagePaths returns the explicit PackagePaths, or derives them from
+// the registered types' packages when none are set.
+func (r *Registry) resolvePackagePaths() []string {
+	if len(r.PackagePaths) > 0 {
+		return r.PackagePaths
+	}
+	var paths []string
+	seen := map[string]bool{}
+	for _, wt := range r.Types {
+		if wt.PkgPath != "" && !seen[wt.PkgPath] {
+			seen[wt.PkgPath] = true
+			paths = append(paths, wt.PkgPath)
+		}
+	}
+	return paths
+}
+
+// loadConfig is the go/packages config used to load and type-check the
+// registered packages with CGO disabled.
+func loadConfig() *packages.Config {
+	return &packages.Config{
+		Mode: packages.NeedSyntax | packages.NeedFiles | packages.NeedTypes |
+			packages.NeedTypesInfo | packages.NeedName | packages.NeedImports |
+			packages.NeedDeps,
+		Env: append(defaultEnv(), "CGO_ENABLED=0"),
+	}
+}
+
+// packagesError returns the first load/type error reported across pkgs, or nil.
+func packagesError(pkgs []*packages.Package) error {
+	for _, pkg := range pkgs {
+		for _, e := range pkg.Errors {
+			return fmt.Errorf("wiregen: package %s: %s", pkg.PkgPath, e.Msg)
+		}
+	}
+	return nil
+}
+
+// indexPackages returns every package in the import graph rooted at pkgs,
+// keyed by import path, so embedded/cross-package field types resolve.
+func indexPackages(pkgs []*packages.Package) map[string]*packages.Package {
+	all := make(map[string]*packages.Package)
+	var visit func(*packages.Package)
+	visit = func(p *packages.Package) {
+		if _, ok := all[p.PkgPath]; ok {
+			return
+		}
+		all[p.PkgPath] = p
+		for _, imp := range p.Imports {
+			visit(imp)
+		}
+	}
+	for _, pkg := range pkgs {
+		visit(pkg)
+	}
+	return all
+}
+
+// valPos pairs a discovered enum const value with its source position so the
+// values can be ordered by declaration order.
+type valPos struct {
+	val string
+	pos token.Pos
 }
 
 // discoverEnumValues populates Values for any registered enum whose Values are
@@ -147,51 +172,59 @@ func (e *astEngine) discoverEnumValues(pkgs []*packages.Package) {
 	if len(need) == 0 {
 		return
 	}
-	type valPos struct {
-		val string
-		pos token.Pos
-	}
 	found := map[string][]valPos{}
 	for _, pkg := range pkgs {
-		if pkg.Types == nil {
-			continue
-		}
-		scope := pkg.Types.Scope()
-		for _, nm := range scope.Names() {
-			c, ok := scope.Lookup(nm).(*types.Const)
-			if !ok {
-				continue
-			}
-			named, ok := c.Type().(*types.Named)
-			if !ok {
-				continue
-			}
-			tn := named.Obj().Name()
-			if !need[tn] {
-				continue
-			}
-			if b, ok := named.Underlying().(*types.Basic); !ok || b.Info()&types.IsString == 0 {
-				continue
-			}
-			if c.Val().Kind() != constant.String {
-				continue
-			}
-			found[tn] = append(found[tn], valPos{constant.StringVal(c.Val()), c.Pos()})
-		}
+		collectStringConsts(pkg, need, found)
 	}
 	for tn, vps := range found {
-		sort.Slice(vps, func(i, j int) bool { return vps[i].pos < vps[j].pos })
-		seen := map[string]bool{}
-		var vals []string
-		for _, vp := range vps {
-			if seen[vp.val] {
-				continue // dedup: exported + unexported consts can share a value
-			}
-			seen[vp.val] = true
-			vals = append(vals, vp.val)
-		}
-		e.r.Enums[tn] = EnumDef{Values: vals}
+		e.r.Enums[tn] = EnumDef{Values: dedupEnumValues(vps)}
 	}
+}
+
+// collectStringConsts appends, for each needed enum type name, the string
+// const values declared at pkg's scope (keyed by the named type's name).
+func collectStringConsts(pkg *packages.Package, need map[string]bool, found map[string][]valPos) {
+	if pkg.Types == nil {
+		return
+	}
+	scope := pkg.Types.Scope()
+	for _, nm := range scope.Names() {
+		c, ok := scope.Lookup(nm).(*types.Const)
+		if !ok {
+			continue
+		}
+		named, ok := c.Type().(*types.Named)
+		if !ok {
+			continue
+		}
+		tn := named.Obj().Name()
+		if !need[tn] {
+			continue
+		}
+		if b, ok := named.Underlying().(*types.Basic); !ok || b.Info()&types.IsString == 0 {
+			continue
+		}
+		if c.Val().Kind() != constant.String {
+			continue
+		}
+		found[tn] = append(found[tn], valPos{constant.StringVal(c.Val()), c.Pos()})
+	}
+}
+
+// dedupEnumValues returns the values ordered by source position and deduped by
+// value (an exported and an unexported const can share a value).
+func dedupEnumValues(vps []valPos) []string {
+	sort.Slice(vps, func(i, j int) bool { return vps[i].pos < vps[j].pos })
+	seen := map[string]bool{}
+	var vals []string
+	for _, vp := range vps {
+		if seen[vp.val] {
+			continue
+		}
+		seen[vp.val] = true
+		vals = append(vals, vp.val)
+	}
+	return vals
 }
 
 func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Package) (*typeInfo, error) {
@@ -230,7 +263,6 @@ func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Packag
 	return ti, nil
 }
 
-//nolint:gocyclo // flat type switch
 func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package, allPkgs map[string]*packages.Package, depth int, visited map[*types.Struct]bool) []fieldInfo {
 	if visited == nil {
 		visited = make(map[*types.Struct]bool)
@@ -240,114 +272,115 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 	}
 	visited[st] = true
 
-	type rawField struct {
-		info  fieldInfo
-		index int
-	}
-	var raw []rawField
-
+	var raw []fieldInfo
 	for i := range st.NumFields() {
 		f := st.Field(i)
 		if !f.Exported() {
-			// Embedded unexported type — skip
-			continue
+			continue // unexported (or embedded unexported) — skip
 		}
-
 		if f.Anonymous() {
-			// Flatten embedded struct
-			embType := f.Type()
-			if ptr, ok := embType.(*types.Pointer); ok {
-				embType = ptr.Elem()
-			}
-			named, ok := embType.(*types.Named)
-			if !ok {
-				continue
-			}
-			embSt, ok := named.Underlying().(*types.Struct)
-			if !ok {
-				continue
-			}
-			subFields := e.resolveStructFields(embSt, pkg, allPkgs, depth+1, visited)
-			for idx, sf := range subFields {
-				raw = append(raw, rawField{info: sf, index: len(raw) + idx})
-			}
+			raw = append(raw, e.flattenEmbedded(f, pkg, allPkgs, depth, visited)...)
 			continue
 		}
-
-		tag := st.Tag(i)
-		jsonTag := reflect.StructTag(tag).Get("json")
-		if jsonTag == "-" {
-			continue
+		if fi, ok := e.resolveTaggedField(f, st.Tag(i), depth, pkg, allPkgs); ok {
+			raw = append(raw, fi)
 		}
+	}
+	return dedupJSONFields(raw)
+}
 
-		parts := strings.Split(jsonTag, ",")
-		wireName := parts[0]
-		if wireName == "" {
-			wireName = f.Name()
-		}
-		if wireName == "-" && len(parts) == 1 {
-			continue
-		}
+// flattenEmbedded resolves the fields promoted from an anonymous (embedded)
+// field, unwrapping a pointer embed. A non-struct embed contributes nothing.
+func (e *astEngine) flattenEmbedded(f *types.Var, pkg *packages.Package, allPkgs map[string]*packages.Package, depth int, visited map[*types.Struct]bool) []fieldInfo {
+	embType := f.Type()
+	if ptr, ok := embType.(*types.Pointer); ok {
+		embType = ptr.Elem()
+	}
+	named, ok := embType.(*types.Named)
+	if !ok {
+		return nil
+	}
+	embSt, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return nil
+	}
+	return e.resolveStructFields(embSt, pkg, allPkgs, depth+1, visited)
+}
 
-		omitempty := false
-		jsonString := false
-		for _, p := range parts[1:] {
-			switch p {
-			case "omitempty", "omitzero":
-				omitempty = true
-			case "string":
-				jsonString = true
-			}
-		}
-
-		fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth, allPkgs)
-
-		// Get field doc comment from AST (scoped to this field's declaration)
-		fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
-
-		raw = append(raw, rawField{info: fi, index: len(raw)})
+// resolveTaggedField resolves one exported, non-embedded field from its type
+// and json tag. ok is false when the field is omitted (json:"-").
+func (e *astEngine) resolveTaggedField(f *types.Var, tag string, depth int, pkg *packages.Package, allPkgs map[string]*packages.Package) (fieldInfo, bool) {
+	jsonTag := reflect.StructTag(tag).Get("json")
+	if jsonTag == "-" {
+		return fieldInfo{}, false
 	}
 
-	// Apply encoding/json field-selection semantics
+	parts := strings.Split(jsonTag, ",")
+	wireName := parts[0]
+	if wireName == "" {
+		wireName = f.Name()
+	}
+	if wireName == "-" && len(parts) == 1 {
+		return fieldInfo{}, false
+	}
+
+	omitempty := false
+	jsonString := false
+	for _, p := range parts[1:] {
+		switch p {
+		case "omitempty", "omitzero":
+			omitempty = true
+		case "string":
+			jsonString = true
+		}
+	}
+
+	fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth, allPkgs)
+	// Field doc comment from AST, scoped to this field's declaration.
+	fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
+	return fi, true
+}
+
+// dedupJSONFields applies encoding/json's field-selection semantics to the raw
+// promoted fields: for each wire name the shallowest depth wins, and a wire
+// name tied at its shallowest depth by more than one field is dropped
+// (ambiguous promotion). Declaration order is preserved.
+func dedupJSONFields(raw []fieldInfo) []fieldInfo {
 	type entry struct {
 		field fieldInfo
 		count int
-		idx   int
 	}
 	best := make(map[string]*entry, len(raw))
 	for i := range raw {
-		rf := &raw[i]
-		if ent, ok := best[rf.info.WireName]; ok {
-			if rf.info.Depth < ent.field.Depth {
-				ent.field = rf.info
-				ent.count = 1
-				ent.idx = rf.index
-			} else if rf.info.Depth == ent.field.Depth {
-				ent.count++
-			}
-		} else {
-			best[rf.info.WireName] = &entry{field: rf.info, count: 1, idx: rf.index}
+		fi := raw[i]
+		ent, ok := best[fi.WireName]
+		if !ok {
+			best[fi.WireName] = &entry{field: fi, count: 1}
+			continue
+		}
+		if fi.Depth < ent.field.Depth {
+			ent.field = fi
+			ent.count = 1
+		} else if fi.Depth == ent.field.Depth {
+			ent.count++
 		}
 	}
 
 	seen := make(map[string]bool, len(best))
 	var result []fieldInfo
 	for i := range raw {
-		rf := &raw[i]
-		if seen[rf.info.WireName] {
+		wireName := raw[i].WireName
+		if seen[wireName] {
 			continue
 		}
-		seen[rf.info.WireName] = true
-		ent := best[rf.info.WireName]
-		if ent.count > 1 {
-			continue
+		seen[wireName] = true
+		if best[wireName].count == 1 {
+			result = append(result, best[wireName].field)
 		}
-		result = append(result, ent.field)
 	}
 	return result
 }
 
-//nolint:gocyclo // flat type switch
 func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, jsonString bool, depth int, _ map[string]*packages.Package) fieldInfo {
 	fi := fieldInfo{
 		WireName:   wireName,
@@ -374,95 +407,22 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 	switch ut := t.(type) {
 	case *types.Alias:
 		return e.resolveFieldType(types.Unalias(ut), wireName, fi.Optional, jsonString, depth, nil)
-
 	case *types.Named:
-		name := ut.Obj().Name()
-		pkgPath := ""
-		if ut.Obj().Pkg() != nil {
-			pkgPath = ut.Obj().Pkg().Path()
-		}
-		fullName := pkgPath + "." + name
-
-		// Check custom mapping by full name
-		if mapped, ok := e.r.TypeMappings[fullName]; ok {
-			fi.TSType = mapped
-			fi.GoTypeName = fullName
-			return fi
-		}
-
-		// time.Time → string
-		if pkgPath == "time" && name == "Time" {
-			fi.TSType = tsString
-			return fi
-		}
-		// json.RawMessage → unknown
-		if pkgPath == "encoding/json" && name == "RawMessage" {
-			fi.TSType = tsUnknown
-			fi.IsRaw = true
-			return fi
-		}
-
-		// Check if it's a registered enum
-		if _, ok := e.r.Enums[name]; ok {
-			fi.TSType = e.r.tsEnumName(name)
-			fi.IsEnum = true
-			fi.GoTypeName = name
-			return fi
-		}
-
-		// Check if it's a registered struct
-		if e.r.typeNames[name] {
-			fi.TSType = e.r.tsName(name)
-			fi.IsStruct = true
-			fi.GoTypeName = name
-			return fi
-		}
-
-		// Recurse into underlying type
-		return e.resolveFieldType(ut.Underlying(), wireName, fi.Optional, jsonString, depth, nil)
-
+		return e.resolveNamedType(ut, &fi, wireName, jsonString, depth)
 	case *types.Basic:
 		fi.TSType = basicToTS(ut)
 		return fi
-
 	case *types.Slice:
-		elem := ut.Elem()
-		// []byte → string
-		if b, ok := elem.(*types.Basic); ok && b.Kind() == types.Byte {
-			fi.TSType = tsString
-			return fi
-		}
-		fi.IsSlice = true
-		elemFI := e.resolveFieldType(elem, "", false, false, 0, nil)
-		fi.TSType = elemFI.TSType + "[]"
-		fi.SliceElem = elemFI.TSType
-		// elemFI.GoTypeName is already keyed correctly: the short Go name for a
-		// registered struct/enum (matches r.typeNames / r.Enums) or the full
-		// importpath.Type for a mapped type (matches Type/DecoderMappings).
-		// Using typeKey(elem) here would always be the full name and miss the
-		// short-keyed struct/enum lookups in elemDecoderExpr.
-		fi.GoTypeName = elemFI.GoTypeName
-		return fi
-
+		return e.resolveSliceType(ut, &fi)
 	case *types.Map:
-		fi.IsMap = true
-		fi.Optional = true
-		valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0, nil)
-		fi.TSType = "Record<string, " + valFI.TSType + ">"
-		fi.MapVal = valFI.TSType
-		// See the slice case: use the element's resolved key, not typeKey(elem).
-		fi.GoTypeName = valFI.GoTypeName
-		return fi
-
+		return e.resolveMapType(ut, &fi)
 	case *types.Interface:
 		fi.TSType = tsUnknown
 		fi.IsIface = true
 		return fi
-
 	case *types.Struct:
 		fi.TSType = tsUnknown
 		return fi
-
 	case *types.Pointer:
 		fi.Optional = true
 		return e.resolveFieldType(ut.Elem(), wireName, true, jsonString, depth, nil)
@@ -475,6 +435,91 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 
 	fi.TSType = tsUnknown
 	return fi
+}
+
+// resolveNamedType resolves a named type: a custom full-name mapping, the
+// time.Time / json.RawMessage special cases, a registered enum or struct, or
+// otherwise a recurse into the underlying type.
+func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName string, jsonString bool, depth int) fieldInfo {
+	name := ut.Obj().Name()
+	pkgPath := ""
+	if ut.Obj().Pkg() != nil {
+		pkgPath = ut.Obj().Pkg().Path()
+	}
+	fullName := pkgPath + "." + name
+
+	// Check custom mapping by full name
+	if mapped, ok := e.r.TypeMappings[fullName]; ok {
+		fi.TSType = mapped
+		fi.GoTypeName = fullName
+		return *fi
+	}
+
+	// time.Time → string
+	if pkgPath == "time" && name == "Time" {
+		fi.TSType = tsString
+		return *fi
+	}
+	// json.RawMessage → unknown
+	if pkgPath == "encoding/json" && name == "RawMessage" {
+		fi.TSType = tsUnknown
+		fi.IsRaw = true
+		return *fi
+	}
+
+	// Check if it's a registered enum
+	if _, ok := e.r.Enums[name]; ok {
+		fi.TSType = e.r.tsEnumName(name)
+		fi.IsEnum = true
+		fi.GoTypeName = name
+		return *fi
+	}
+
+	// Check if it's a registered struct
+	if e.r.typeNames[name] {
+		fi.TSType = e.r.tsName(name)
+		fi.IsStruct = true
+		fi.GoTypeName = name
+		return *fi
+	}
+
+	// Recurse into underlying type
+	return e.resolveFieldType(ut.Underlying(), wireName, fi.Optional, jsonString, depth, nil)
+}
+
+// resolveSliceType resolves a slice field. []byte maps to string (base64);
+// otherwise the element type is resolved and suffixed with "[]".
+func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
+	elem := ut.Elem()
+	// []byte → string
+	if b, ok := elem.(*types.Basic); ok && b.Kind() == types.Byte {
+		fi.TSType = tsString
+		return *fi
+	}
+	fi.IsSlice = true
+	elemFI := e.resolveFieldType(elem, "", false, false, 0, nil)
+	fi.TSType = elemFI.TSType + "[]"
+	fi.SliceElem = elemFI.TSType
+	// elemFI.GoTypeName is already keyed correctly: the short Go name for a
+	// registered struct/enum (matches r.typeNames / r.Enums) or the full
+	// importpath.Type for a mapped type (matches Type/DecoderMappings).
+	// Using typeKey(elem) here would always be the full name and miss the
+	// short-keyed struct/enum lookups in elemDecoderExpr.
+	fi.GoTypeName = elemFI.GoTypeName
+	return *fi
+}
+
+// resolveMapType resolves a map field into Record<string, V>. The field is
+// always optional (a nil map omits in JSON).
+func (e *astEngine) resolveMapType(ut *types.Map, fi *fieldInfo) fieldInfo {
+	fi.IsMap = true
+	fi.Optional = true
+	valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0, nil)
+	fi.TSType = "Record<string, " + valFI.TSType + ">"
+	fi.MapVal = valFI.TSType
+	// See the slice case: use the element's resolved key, not typeKey(elem).
+	fi.GoTypeName = valFI.GoTypeName
+	return *fi
 }
 
 func (e *astEngine) findFieldDoc(fieldObj *types.Var, fallback *packages.Package, allPkgs map[string]*packages.Package) string {
@@ -532,23 +577,37 @@ func findTypeSpec(pkg *packages.Package, name string) *ast.TypeSpec {
 	for _, file := range pkg.Syntax {
 		for _, decl := range file.Decls {
 			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
+			if !ok {
 				continue
 			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				if ts.Name.Name == name {
-					// Attach GenDecl doc if TypeSpec doc is nil
-					if ts.Doc == nil && gd.Doc != nil {
-						ts.Doc = gd.Doc
-					}
-					return ts
-				}
+			if ts := typeSpecInDecl(gd, name); ts != nil {
+				return ts
 			}
 		}
+	}
+	return nil
+}
+
+// typeSpecInDecl returns the TypeSpec named `name` declared in the type
+// GenDecl gd, attaching the GenDecl doc when the spec itself has none. It
+// returns nil if gd is not a type declaration or has no matching spec.
+func typeSpecInDecl(gd *ast.GenDecl, name string) *ast.TypeSpec {
+	if gd.Tok != token.TYPE {
+		return nil
+	}
+	for _, spec := range gd.Specs {
+		ts, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		if ts.Name.Name != name {
+			continue
+		}
+		// Attach GenDecl doc if TypeSpec doc is nil.
+		if ts.Doc == nil && gd.Doc != nil {
+			ts.Doc = gd.Doc
+		}
+		return ts
 	}
 	return nil
 }
@@ -563,30 +622,9 @@ func parseUnionDirective(cg *ast.CommentGroup) *UnionDef {
 		if !strings.HasPrefix(text, "wiregen:union") {
 			continue
 		}
-		text = strings.TrimPrefix(text, "wiregen:union")
-		text = strings.TrimSpace(text)
+		text = strings.TrimSpace(strings.TrimPrefix(text, "wiregen:union"))
 
-		ud := &UnionDef{}
-		for part := range strings.FieldsSeq(text) {
-			kv := strings.SplitN(part, "=", 2)
-			if len(kv) != 2 {
-				continue
-			}
-			switch kv[0] {
-			case "discriminator":
-				ud.Discriminator = kv[1]
-			case "variants":
-				ud.Variants = strings.Split(kv[1], ",")
-			}
-		}
-		// Filter out empty variants
-		var filtered []string
-		for _, v := range ud.Variants {
-			if v != "" {
-				filtered = append(filtered, v)
-			}
-		}
-		ud.Variants = filtered
+		ud := parseUnionFields(text)
 		if ud.Discriminator != "" && len(ud.Variants) > 0 {
 			return ud
 		}
@@ -594,41 +632,66 @@ func parseUnionDirective(cg *ast.CommentGroup) *UnionDef {
 	return nil
 }
 
+// parseUnionFields parses the "discriminator=… variants=a,b,c" body of a
+// wiregen:union directive, dropping empty variants.
+func parseUnionFields(text string) *UnionDef {
+	ud := &UnionDef{}
+	for part := range strings.FieldsSeq(text) {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "discriminator":
+			ud.Discriminator = kv[1]
+		case "variants":
+			for v := range strings.SplitSeq(kv[1], ",") {
+				if v != "" {
+					ud.Variants = append(ud.Variants, v)
+				}
+			}
+		}
+	}
+	return ud
+}
+
+// commentText returns the human text of a single comment line/block, with ok
+// false for a Go pragma or wiregen directive that must not flow into JSDoc.
+func commentText(c *ast.Comment) (string, bool) {
+	text := c.Text
+	// Skip Go pragmas and wiregen directives.
+	trimmed := strings.TrimSpace(strings.TrimPrefix(text, "//"))
+	if strings.HasPrefix(trimmed, "nolint") || strings.HasPrefix(trimmed, "go:") || strings.HasPrefix(trimmed, "wiregen:") {
+		return "", false
+	}
+	if strings.HasPrefix(text, "//") {
+		return strings.TrimPrefix(text, "// "), true
+	}
+	if inner, ok := strings.CutPrefix(text, "/*"); ok {
+		return strings.TrimSpace(strings.TrimSuffix(inner, "*/")), true
+	}
+	return "", false
+}
+
 func commentToJSDoc(cg *ast.CommentGroup) string {
 	if cg == nil {
 		return ""
 	}
-	var lines []string
+	var nonEmpty []string
 	for _, c := range cg.List {
-		text := c.Text
-		// Skip Go pragmas and wiregen directives
-		trimmed := strings.TrimSpace(strings.TrimPrefix(text, "//"))
-		if strings.HasPrefix(trimmed, "nolint") || strings.HasPrefix(trimmed, "go:") || strings.HasPrefix(trimmed, "wiregen:") {
+		line, ok := commentText(c)
+		if !ok {
 			continue
 		}
-		if strings.HasPrefix(text, "//") {
-			lines = append(lines, strings.TrimPrefix(text, "// "))
-		} else if inner, ok := strings.CutPrefix(text, "/*"); ok {
-			inner = strings.TrimSuffix(inner, "*/")
-			lines = append(lines, strings.TrimSpace(inner))
+		// Drop empty (or slash-only) lines.
+		if strings.TrimPrefix(line, "/") == "" {
+			continue
 		}
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	// Filter empty lines
-	var nonEmpty []string
-	for _, l := range lines {
-		if strings.TrimPrefix(l, "/") != "" {
-			nonEmpty = append(nonEmpty, l)
-		}
+		// Replace */ with *\/ to prevent a premature JSDoc close.
+		nonEmpty = append(nonEmpty, strings.ReplaceAll(line, "*/", "*\\/"))
 	}
 	if len(nonEmpty) == 0 {
 		return ""
-	}
-	// Sanitize: replace */ with *\/ to prevent premature JSDoc close
-	for i, l := range nonEmpty {
-		nonEmpty[i] = strings.ReplaceAll(l, "*/", "*\\/")
 	}
 	if len(nonEmpty) == 1 {
 		return "/** " + nonEmpty[0] + " */\n"

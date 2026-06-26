@@ -17,8 +17,14 @@ const (
 
 func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 	w.WriteString(r.HeaderComment)
+	r.emitEnumTypes(w)
+	r.emitUnionTypes(w, engine)
+	r.emitStructInterfaces(w, engine)
+}
 
-	// Enums (sorted by TS name)
+// emitEnumTypes writes the `export type X = "a" | "b";` string-union aliases,
+// deduplicated and sorted by TS name.
+func (r *Registry) emitEnumTypes(w *strings.Builder) {
 	enumNames := make([]string, 0, len(r.Enums))
 	seenEnumTS := map[string]bool{}
 	for name := range r.Enums {
@@ -41,8 +47,11 @@ func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 		}
 		w.WriteString(";\n\n")
 	}
+}
 
-	// Union types
+// emitUnionTypes writes the `export type X = A | B | C;` aliases for the
+// //wiregen:union types.
+func (r *Registry) emitUnionTypes(w *strings.Builder, engine *astEngine) {
 	for _, ti := range engine.types {
 		if ti.Union == nil {
 			continue
@@ -59,8 +68,11 @@ func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 		}
 		w.WriteString(";\n\n")
 	}
+}
 
-	// Struct interfaces (sorted by TS name, skip unions)
+// emitStructInterfaces writes the `export interface X { … }` declarations for
+// the non-union types.
+func (r *Registry) emitStructInterfaces(w *strings.Builder, engine *astEngine) {
 	for _, ti := range engine.types {
 		if ti.Union != nil {
 			continue
@@ -69,53 +81,66 @@ func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 			w.WriteString(ti.Doc)
 		}
 		w.WriteString("export interface " + r.tsName(ti.Name) + " {\n")
-		for _, f := range ti.Fields {
-			if f.Doc != "" {
-				w.WriteString("  " + f.Doc)
-			}
-			ts := f.TSType
-			if f.JSONString {
-				ts = tsString
-			}
-			if f.Optional {
-				w.WriteString("  " + f.WireName + "?: " + ts + ";\n")
-			} else {
-				w.WriteString("  " + f.WireName + ": " + ts + ";\n")
-			}
+		for i := range ti.Fields {
+			emitInterfaceField(w, &ti.Fields[i])
 		}
 		w.WriteString("}\n\n")
 	}
 }
 
+// emitInterfaceField writes one `name: type;` (or `name?: type;`) interface
+// member, prefixed by its JSDoc when present.
+func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
+	if f.Doc != "" {
+		w.WriteString("  " + f.Doc)
+	}
+	ts := f.TSType
+	if f.JSONString {
+		ts = tsString
+	}
+	if f.Optional {
+		w.WriteString("  " + f.WireName + "?: " + ts + ";\n")
+	} else {
+		w.WriteString("  " + f.WireName + ": " + ts + ";\n")
+	}
+}
+
 // --- decoders generation ---
 
-//nolint:gocyclo // large but flat
 func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 	if r.ValidatorsImport == "" {
 		panic("wiregen: ValidatorsImport must be set")
 	}
-
-	var bodies strings.Builder
-
-	// Emit decoders for structs (skip unions)
-	for _, ti := range engine.types {
-		if ti.Union != nil {
-			continue
-		}
-		r.emitDecoder(&bodies, ti)
-	}
-
-	// Emit union decoders
-	for _, ti := range engine.types {
-		if ti.Union == nil {
-			continue
-		}
-		r.emitUnionDecoder(&bodies, ti)
-	}
-
-	body := bodies.String()
+	body := r.decoderBodies(engine)
 
 	w.WriteString(r.HeaderComment)
+	r.emitHelperImports(w, body)
+	r.emitTypeImports(w, body, engine)
+	r.emitEnumConsts(w, body)
+	w.WriteString(body)
+}
+
+// decoderBodies emits the struct decoders followed by the union decoders and
+// returns the concatenated body (used to decide which imports/consts the
+// header needs).
+func (r *Registry) decoderBodies(engine *astEngine) string {
+	var bodies strings.Builder
+	for _, ti := range engine.types {
+		if ti.Union == nil {
+			r.emitDecoder(&bodies, ti)
+		}
+	}
+	for _, ti := range engine.types {
+		if ti.Union != nil {
+			r.emitUnionDecoder(&bodies, ti)
+		}
+	}
+	return bodies.String()
+}
+
+// emitHelperImports writes the validators-module import, listing only the
+// contract helpers actually referenced by the decoder body.
+func (r *Registry) emitHelperImports(w *strings.Builder, body string) {
 	allHelpers := []string{
 		"asObject", "asArray", "reqStr", "reqNum", "reqBool",
 		"optStr", "optNum", "optBool", "reqOneOf",
@@ -133,8 +158,11 @@ func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 		w.WriteString(", ")
 	}
 	w.WriteString("type Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n")
+}
 
-	// Types import
+// emitTypeImports writes the `import type { … }` line for the type/enum names
+// referenced by the decoder body, sorted; it emits nothing when none are used.
+func (r *Registry) emitTypeImports(w *strings.Builder, body string, engine *astEngine) {
 	candidateNames := make([]string, 0)
 	for _, ti := range engine.types {
 		candidateNames = append(candidateNames, r.tsName(ti.Name))
@@ -164,15 +192,15 @@ func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 		w.WriteString(" } from \"" + r.TypesImportPath + "\";\n")
 	}
 	w.WriteString("\n")
+}
 
-	// Enum constants
+// emitEnumConsts writes the `const XS = [...] as const;` value arrays for the
+// enums referenced by the decoder body (deduped), then a trailing blank line.
+func (r *Registry) emitEnumConsts(w *strings.Builder, body string) {
 	emitted := map[string]bool{}
 	for _, name := range enumNamesSlice(r.Enums) {
 		constN := r.enumConstName(name)
-		if emitted[constN] {
-			continue
-		}
-		if !isIdentReferenced(body, constN) {
+		if emitted[constN] || !isIdentReferenced(body, constN) {
 			continue
 		}
 		emitted[constN] = true
@@ -189,8 +217,6 @@ func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 	if len(emitted) > 0 {
 		w.WriteString("\n")
 	}
-
-	w.WriteString(body)
 }
 
 func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo) {

@@ -127,3 +127,48 @@ type HasPrivateEmbed struct {
 	Name string `json:"name"`
 	privateBase
 }
+
+// HasJSONNumber has an encoding/json.Number field. encoding/json marshals a
+// json.Number as an unquoted JSON number, so it maps to TS number.
+type HasJSONNumber struct {
+	Amount json.Number `json:"amount"`
+	Name   string      `json:"name"`
+}
+
+// PlainName promotes an untagged "Name" field (wire name = Go field name).
+type PlainName struct {
+	Name string
+}
+
+// TaggedName promotes a tagged field whose wire name is also "Name".
+type TaggedName struct {
+	Renamed string `json:"Name"`
+}
+
+// TaggedDominatesA embeds the tagged struct first; both promote wire "Name"
+// at depth 1, and the tagged field must win (not an ambiguous drop).
+type TaggedDominatesA struct {
+	TaggedName
+	PlainName
+}
+
+// TaggedDominatesB embeds the untagged struct first; the tagged field must
+// still win regardless of declaration order.
+type TaggedDominatesB struct {
+	PlainName
+	TaggedName
+}
+
+// TaggedEmbed carries an explicit json name on an embedded struct: per
+// encoding/json a tagged embed becomes a NAMED nested field, not flattened.
+type TaggedEmbed struct {
+	Inner `json:"meta"`
+	Extra string `json:"extra"`
+}
+
+// DashEmbed excludes an embedded struct via json:"-": the whole embed and its
+// promoted fields are dropped, not flattened.
+type DashEmbed struct {
+	Inner `json:"-"`
+	Kept  string `json:"kept"`
+}

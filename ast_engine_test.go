@@ -49,7 +49,9 @@ func TestNewASTEngine_discoversEnumsWithoutRegisteredTypes(t *testing.T) {
 
 // TestResolveStructFields_dashCommaFieldEmitted pins that a field tagged
 // json:"-," (a field literally named "-") is emitted, while the bare json:"-"
-// skip is handled separately.
+// skip is handled separately. Because "-" is not a valid TS identifier it is
+// emitted as a quoted property name ("-": ...); the bare form (-: ...) would be
+// invalid TypeScript.
 func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
 	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
 	r.PackagePaths = []string{edgesPkg}
@@ -58,7 +60,8 @@ func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
 
 	mustContain(t, "dash-comma", out, "export interface DashComma {")
 	mustContain(t, "dash-comma", out, "  name: string;")
-	mustContain(t, "dash-comma", out, "  -: string;")
+	mustContain(t, "dash-comma", out, "  \"-\": string;")
+	mustNotContain(t, "dash-comma", out, "  -: string;")
 }
 
 // TestFieldDoc_scopedToDeclaringField pins that each field's JSDoc comes from

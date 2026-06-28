@@ -222,3 +222,54 @@ func TestTypeRef_interfaceFallback(t *testing.T) {
 		t.Errorf("TypeRef[markerIface]().Name = %q, want %q", got.Name, "markerIface")
 	}
 }
+
+// TestIsValidTSIdent pins isValidTSIdent's predicate: the empty string and a
+// leading digit are rejected via the early return, and the char-class accepts
+// letters, '_', '$', and a non-leading digit. The empty / leading-digit
+// rejections are unreachable through tsPropName / tsMemberRef (wire names
+// never start that way), so they need a direct test.
+func TestIsValidTSIdent(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"0abc", false},
+		{"9", false},
+		{"content-type", false},
+		{"a b", false},
+		{"abc", true},
+		{"_x", true},
+		{"$x", true},
+		{"a1", true},
+		{"A", true},
+		{"_", true},
+		{"$", true},
+	}
+	for _, c := range cases {
+		if got := isValidTSIdent(c.in); got != c.want {
+			t.Errorf("isValidTSIdent(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestEmitUnionDecoder_sanitizesDiscriminator pins that a non-identifier or
+// reserved-word //wiregen:union discriminator is sanitized to a valid TS
+// identifier for the decoder's parameter name. The case labels use the
+// already-escaped DiscriminatorMap keys, so only the local param binding is
+// affected; a value that sanitizes to empty falls back to "disc". A valid
+// identifier discriminator (see TestUnion_DecoderAllVariants) is unchanged.
+func TestEmitUnionDecoder_sanitizesDiscriminator(t *testing.T) {
+	r := &Registry{DiscriminatorMap: map[string]map[string]string{"E": {"a": "A"}}}
+	for _, c := range []struct{ disc, want string }{
+		{"event_type", "eventType"}, // underscore -> camelCase
+		{"default", "defaultVal"},   // reserved word -> suffixed
+		{"@@@", "disc"},             // sanitizes to empty -> fallback
+	} {
+		var w strings.Builder
+		r.emitUnionDecoder(&w, &typeInfo{Name: "E", Union: &UnionDef{Discriminator: c.disc}})
+		if out := w.String(); !strings.Contains(out, "("+c.want+": string, v: unknown)") {
+			t.Errorf("discriminator %q: expected sanitized param %q in signature, got:\n%s", c.disc, c.want, out)
+		}
+	}
+}

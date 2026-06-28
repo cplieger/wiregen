@@ -389,6 +389,25 @@ func TestTSNameOverride(t *testing.T) {
 	}
 }
 
+func TestTSNameOverride_sanitizesNonIdentifier(t *testing.T) {
+	// A non-identifier override must be sanitized to a valid TS identifier
+	// rather than emitted verbatim (mirrors EnumTSName via tsEnumName); a valid
+	// identifier override is unchanged (TestTSNameOverride). An override that
+	// sanitizes to empty falls back to the Go name.
+	r := edgesReg(wiregen.TypeRef[edges.Inner]())
+	r.TSNameOverride = map[string]string{"Inner": "Inner Profile 2"}
+	if out := r.GenerateTypes(); !strings.Contains(out, "export interface InnerProfile2") ||
+		strings.Contains(out, "Inner Profile 2") {
+		t.Errorf("expected sanitized InnerProfile2 (no verbatim spaces), got:\n%s", out)
+	}
+
+	r2 := edgesReg(wiregen.TypeRef[edges.Inner]())
+	r2.TSNameOverride = map[string]string{"Inner": "@@@"}
+	if out := r2.GenerateTypes(); !strings.Contains(out, "export interface Inner") {
+		t.Errorf("expected fallback to Go name Inner for an all-invalid override, got:\n%s", out)
+	}
+}
+
 func TestEnumTSNameOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasOptEnum]())
 	r.Enums = map[string]wiregen.EnumDef{"MyEnum": {Values: []string{"a", "b"}}}
@@ -396,5 +415,20 @@ func TestEnumTSNameOverride(t *testing.T) {
 	out := r.GenerateTypes()
 	if !strings.Contains(out, "export type StatusEnum") {
 		t.Errorf("expected StatusEnum, got:\n%s", out)
+	}
+}
+
+// TestJSONNumberMapsToNumber pins the cycle-1 json.Number branch: an
+// encoding/json.Number field maps to TS number (not string) and decodes via
+// reqNum, matching encoding/json's unquoted-number wire form.
+func TestJSONNumberMapsToNumber(t *testing.T) {
+	r := edgesReg(wiregen.TypeRef[edges.HasJSONNumber]())
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "amount: number;") {
+		t.Errorf("json.Number should map to number, got:\n%s", out)
+	}
+	dec := r.GenerateDecoders()
+	if !strings.Contains(dec, `reqNum(o, "amount"`) {
+		t.Errorf("json.Number should decode with reqNum, got:\n%s", dec)
 	}
 }

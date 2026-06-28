@@ -163,6 +163,28 @@ type Ambiguous struct {
 	ID int `json:"id"`
 }
 
+// Diamond embeds a common DiamondBase through two sibling embeds
+// (DiamondLeft and DiamondRight). encoding/json reaches DiamondBase's tagged
+// field via two equal-depth index paths and drops it as an ambiguous
+// promotion; the non-ambiguous direct ID survives.
+type DiamondBase struct {
+	BaseField string `json:"base_field"`
+}
+
+type DiamondLeft struct {
+	DiamondBase
+}
+
+type DiamondRight struct {
+	DiamondBase
+}
+
+type Diamond struct {
+	DiamondLeft
+	DiamondRight
+	ID int `json:"id"`
+}
+
 // DirectWins has a direct field that overrides an embedded one.
 type EmbBase struct {
 	Name string `json:"name"`

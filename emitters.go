@@ -11,6 +11,7 @@ const (
 	tsIdentityCast = "(v) => v as unknown"
 	tsBoolean      = "boolean"
 	tsString       = "string"
+	tsNumber       = "number"
 )
 
 // --- types generation ---
@@ -39,6 +40,17 @@ func (r *Registry) emitEnumTypes(w *strings.Builder) {
 	for _, name := range enumNames {
 		def := r.Enums[name]
 		w.WriteString("export type " + r.tsEnumName(name) + " = ")
+		if len(def.Values) == 0 {
+			// A registered enum that resolved to zero values (no explicit
+			// Values and no string const block discovered in a loaded
+			// package) must never emit "= ;" (invalid TS — see the
+			// mustNotContain guard in
+			// TestNewASTEngine_discoversEnumsWithoutRegisteredTypes). Emit the
+			// bottom type so output stays syntactically valid; the empty
+			// reqOneOf(...) membership check then fails clearly at decode time.
+			w.WriteString("never;\n\n")
+			continue
+		}
 		for i, v := range def.Values {
 			if i > 0 {
 				w.WriteString(" | ")
@@ -99,9 +111,9 @@ func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
 		ts = tsString
 	}
 	if f.Optional {
-		w.WriteString("  " + f.WireName + "?: " + ts + ";\n")
+		w.WriteString("  " + tsPropName(f.WireName) + "?: " + ts + ";\n")
 	} else {
-		w.WriteString("  " + f.WireName + ": " + ts + ";\n")
+		w.WriteString("  " + tsPropName(f.WireName) + ": " + ts + ";\n")
 	}
 }
 
@@ -189,7 +201,7 @@ func (r *Registry) emitTypeImports(w *strings.Builder, body string, engine *astE
 	if len(used) > 0 {
 		w.WriteString("import type { ")
 		w.WriteString(strings.Join(used, ", "))
-		w.WriteString(" } from \"" + r.TypesImportPath + "\";\n")
+		w.WriteString(" } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
 	}
 	w.WriteString("\n")
 }
@@ -237,7 +249,7 @@ func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo) {
 	if len(reqFields) > 0 || len(optFields) > 0 {
 		w.WriteString("  const out: " + tn + " = {\n")
 		for _, f := range reqFields {
-			w.WriteString("    " + f.WireName + ": " + r.reqExpr(&f, path) + ",\n")
+			w.WriteString("    " + tsPropName(f.WireName) + ": " + r.reqExpr(&f, path) + ",\n")
 		}
 		w.WriteString("  };\n")
 	} else {
@@ -259,7 +271,10 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo) {
 		return // No discriminator map → only type alias emitted
 	}
 
-	disc := ti.Union.Discriminator
+	disc := sanitizeVarName(ti.Union.Discriminator)
+	if disc == "" {
+		disc = "disc"
+	}
 	w.WriteString("export const " + r.decoderName(ti.Name) + ": (" + disc + ": string, v: unknown) => " + tn + " = (" + disc + ", v) => {\n")
 	w.WriteString("  switch (" + disc + ") {\n")
 
@@ -272,7 +287,7 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo) {
 
 	for _, k := range keys {
 		variant := dm[k]
-		w.WriteString("    case \"" + k + "\": return " + r.decoderName(variant) + "(v);\n")
+		w.WriteString("    case \"" + tsStringLiteral(k) + "\": return " + r.decoderName(variant) + "(v);\n")
 	}
 	w.WriteString("    default: throw new TypeError(`unknown " + tn + " variant: ${" + disc + "}`);\n")
 	w.WriteString("  }\n")
@@ -280,101 +295,96 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo) {
 }
 
 func (r *Registry) reqExpr(f *fieldInfo, path string) string {
+	wn := tsStringLiteral(f.WireName)
 	if f.JSONString {
-		return "reqStr(o, \"" + f.WireName + "\", \"" + path + "\")"
+		return "reqStr(o, \"" + wn + "\", \"" + path + "\")"
 	}
 	if f.IsRaw || f.IsIface {
-		return "o[\"" + f.WireName + "\"] as unknown"
+		return "o[\"" + wn + "\"] as unknown"
 	}
 
 	// Custom decoder mapping
 	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
-		return expr + "(o, \"" + f.WireName + "\", \"" + path + "\")"
+		return expr + "(o, \"" + wn + "\", \"" + path + "\")"
 	}
 	// Custom type mapping without decoder
 	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
-		return "o[\"" + f.WireName + "\"] as " + f.TSType
+		return "o[\"" + wn + "\"] as " + f.TSType
 	}
 
 	if f.IsEnum {
-		return "reqOneOf(o, \"" + f.WireName + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\")"
+		return "reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\")"
 	}
 	if f.IsStruct {
-		return r.decoderName(f.GoTypeName) + "(o[\"" + f.WireName + "\"])"
+		return r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"])"
 	}
 	if f.IsSlice {
-		return "decodeArray(o[\"" + f.WireName + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\")"
+		return "decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + wn + "\")"
 	}
 	if f.IsMap {
-		return "decodeRecord(o[\"" + f.WireName + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\")"
+		return "decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + wn + "\")"
 	}
 
 	// Unresolved type (e.g. an unregistered nested struct) — pass through as
 	// unknown rather than mis-decoding it as a number.
 	if f.TSType == tsUnknown {
-		return "o[\"" + f.WireName + "\"] as unknown"
+		return "o[\"" + wn + "\"] as unknown"
 	}
 
 	// Primitive
-	return primHelperAST(f.TSType, false) + "(o, \"" + f.WireName + "\", \"" + path + "\")"
+	return primHelperAST(f.TSType, false) + "(o, \"" + wn + "\", \"" + path + "\")"
 }
 
 func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path string) {
+	wn := tsStringLiteral(f.WireName)
 	if f.JSONString {
-		varName := sanitizeVarName(f.WireName)
-		w.WriteString("  const " + varName + " = optStr(o, \"" + f.WireName + "\", \"" + path + "\");\n")
-		w.WriteString("  if (" + varName + " !== undefined) out." + f.WireName + " = " + varName + ";\n")
+		varName := localVarName(f.WireName)
+		w.WriteString("  const " + varName + " = optStr(o, \"" + wn + "\", \"" + path + "\");\n")
+		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 		return
 	}
 	if f.IsRaw || f.IsIface {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = o[\"" + f.WireName + "\"] as unknown;\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as unknown;\n")
 		return
 	}
 	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
-		varName := sanitizeVarName(f.WireName)
-		w.WriteString("  const " + varName + " = " + expr + "(o, \"" + f.WireName + "\", \"" + path + "\");\n")
-		w.WriteString("  if (" + varName + " !== undefined) out." + f.WireName + " = " + varName + ";\n")
+		varName := localVarName(f.WireName)
+		w.WriteString("  const " + varName + " = " + expr + "(o, \"" + wn + "\", \"" + path + "\");\n")
+		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 		return
 	}
 	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = o[\"" + f.WireName + "\"] as " + f.TSType + ";\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as " + f.TSType + ";\n")
 		return
 	}
 	if f.IsEnum {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = reqOneOf(o, \"" + f.WireName + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\");\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\");\n")
 		return
 	}
 	if f.IsStruct {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = " + r.decoderName(f.GoTypeName) + "(o[\"" + f.WireName + "\"]);\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = " + r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"]);\n")
 		return
 	}
 	if f.IsSlice {
-		// []byte already handled as string in TSType
-		if f.TSType == tsString {
-			varName := sanitizeVarName(f.WireName)
-			w.WriteString("  const " + varName + " = optStr(o, \"" + f.WireName + "\", \"" + path + "\");\n")
-			w.WriteString("  if (" + varName + " !== undefined) out." + f.WireName + " = " + varName + ";\n")
-			return
-		}
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = decodeArray(o[\"" + f.WireName + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\");\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + wn + "\");\n")
 		return
 	}
 	if f.IsMap {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = decodeRecord(o[\"" + f.WireName + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + f.WireName + "\");\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + wn + "\");\n")
 		return
 	}
 
 	// Unresolved type — pass through as unknown rather than optNum.
 	if f.TSType == tsUnknown {
-		w.WriteString("  if (o[\"" + f.WireName + "\"] !== undefined) out." + f.WireName + " = o[\"" + f.WireName + "\"] as unknown;\n")
+		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as unknown;\n")
 		return
 	}
 
 	// Primitive optional
 	helper := primHelperAST(f.TSType, true)
-	varName := sanitizeVarName(f.WireName)
-	w.WriteString("  const " + varName + " = " + helper + "(o, \"" + f.WireName + "\", \"" + path + "\");\n")
-	w.WriteString("  if (" + varName + " !== undefined) out." + f.WireName + " = " + varName + ";\n")
+	varName := localVarName(f.WireName)
+	w.WriteString("  const " + varName + " = " + helper + "(o, \"" + wn + "\", \"" + path + "\");\n")
+	w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 }
 
 func (r *Registry) elemDecoderExpr(f *fieldInfo) string {
@@ -402,7 +412,7 @@ func (r *Registry) elemDecoderExpr(f *fieldInfo) string {
 	switch elemType {
 	case tsString:
 		return "(v) => { if (typeof v !== \"string\") throw new TypeError(\"expected string\"); return v as string; }"
-	case "number":
+	case tsNumber:
 		return "(v) => { if (typeof v !== \"number\") throw new TypeError(\"expected number\"); return v as number; }"
 	case tsBoolean:
 		return "(v) => { if (typeof v !== \"boolean\") throw new TypeError(\"expected boolean\"); return v as boolean; }"

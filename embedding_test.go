@@ -69,6 +69,23 @@ func TestPromotionAmbiguityOmitsBoth(t *testing.T) {
 	}
 }
 
+// TestDiamondEmbedOmitsSharedBase pins the diamond-embedding case: a common
+// base (DiamondBase) reached through two sibling embeds (DiamondLeft and
+// DiamondRight) is promoted via two equal-depth index paths, so encoding/json
+// drops it as an ambiguous promotion. The shared base field must be omitted
+// while the direct non-ambiguous "id" survives. A global visited set would
+// walk the base once (first path wins) and wrongly emit its field.
+func TestDiamondEmbedOmitsSharedBase(t *testing.T) {
+	r := edgesReg(wiregen.TypeRef[edges.Diamond]())
+	out := r.GenerateTypes()
+	if body := ifaceBody(out, "Diamond"); strings.Contains(body, "base_field") {
+		t.Errorf("diamond-shared base field should be omitted as ambiguous, got:\n%s", out)
+	}
+	if !strings.Contains(out, "id: number") {
+		t.Errorf("non-ambiguous 'id' field should be present, got:\n%s", out)
+	}
+}
+
 func TestDirectFieldWins(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DirectWins](), wiregen.TypeRef[edges.EmbBase]())
 	out := r.GenerateTypes()
@@ -150,5 +167,43 @@ func TestEmbeddedFieldWithDashTag(t *testing.T) {
 	}
 	if !strings.Contains(out, "extra: string;") {
 		t.Errorf("direct extra field should be present, got:\n%s", out)
+	}
+}
+
+// TestPromotion_TaggedDominatesUntaggedAtEqualDepth pins the cycle-1
+// equalDepthWinner tiebreak: when two fields are promoted at the same depth
+// with the same wire name, a tagged field dominates an untagged one (it is
+// NOT dropped as ambiguous), regardless of embed declaration order.
+func TestPromotion_TaggedDominatesUntaggedAtEqualDepth(t *testing.T) {
+	for _, name := range []string{"TaggedDominatesA", "TaggedDominatesB"} {
+		r := edgesReg(wiregen.WireType{PkgPath: "github.com/cplieger/wiregen/testdata/edges", Name: name})
+		body := ifaceBody(r.GenerateTypes(), name)
+		if got := strings.Count(body, "Name:"); got != 1 {
+			t.Errorf("%s: tagged field should win at equal depth (exactly 1 Name), got %d:\n%s", name, got, body)
+		}
+	}
+}
+
+// TestTaggedEmbedBecomesNamedField pins the cycle-1 resolveEmbeddedField
+// branch where an embed carrying an explicit json name is a NAMED nested
+// field (encoding/json does not flatten a tagged embed).
+func TestTaggedEmbedBecomesNamedField(t *testing.T) {
+	r := edgesReg(wiregen.TypeRef[edges.TaggedEmbed](), wiregen.TypeRef[edges.Inner]())
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "meta: Inner;") {
+		t.Errorf("tagged embed should become named nested field meta: Inner, got:\n%s", out)
+	}
+}
+
+// TestDashEmbedSkipped pins the cycle-1 resolveEmbeddedField branch where an
+// embed tagged json:"-" is dropped entirely (not flattened).
+func TestDashEmbedSkipped(t *testing.T) {
+	r := edgesReg(wiregen.TypeRef[edges.DashEmbed]())
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "kept: string;") {
+		t.Errorf("direct kept field should be present, got:\n%s", out)
+	}
+	if strings.Contains(out, "val") {
+		t.Errorf("json:\"-\" embed should be excluded (no val), got:\n%s", out)
 	}
 }

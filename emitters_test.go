@@ -77,3 +77,46 @@ func TestEmitDecoder_structLiteralShape(t *testing.T) {
 	mustContain(t, "empty-struct", out, "const out: EmptyStruct = {};")
 	mustContain(t, "all-optional", out, "const out: AllOptional = {\n  };")
 }
+
+// TestEmitEnumTypes_zeroValuesEmitsNever pins the zero-values guard in
+// emitEnumTypes: a registered enum that resolves to no values emits the bottom
+// type `= never;` (syntactically valid TS) rather than the invalid `= ;`.
+func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
+	r := &Registry{}
+	r.Enums = map[string]EnumDef{"Phantom": {}}
+	out := r.GenerateTypes()
+	mustContain(t, "never-enum", out, "export type Phantom = never;")
+	mustNotContain(t, "never-enum", out, "export type Phantom = ;")
+}
+
+// TestEmitOptionalField_nonIdentWireNameUsesBracketRef pins the
+// non-identifier branch of tsMemberRef (reached via emitOptionalField): an
+// optional field whose JSON key is not a valid TS identifier assigns through
+// bracket access (out["content-type"] = ...) so the generated decoder stays
+// valid TypeScript.
+func TestEmitOptionalField_nonIdentWireNameUsesBracketRef(t *testing.T) {
+	r := &Registry{}
+	var w strings.Builder
+	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Optional: true}, "$.x")
+	out := w.String()
+	mustContain(t, "opt-nonident", out, `const contenttype = optStr(o, "content-type", "$.x");`)
+	mustContain(t, "opt-nonident", out, `if (contenttype !== undefined) out["content-type"] = contenttype;`)
+}
+
+// TestEmitOptionalField_emptyVarNameFallsBackToFieldVal pins the localVarName
+// empty-guard reached via emitOptionalField: an optional field whose JSON key
+// sanitizes to "" (e.g. json:"_", which strings.Split on "_" yields two empty
+// parts) must not emit an empty `const  = ...` identifier with an empty RHS.
+// localVarName substitutes the fixed "fieldVal" name so the generated decoder
+// stays valid TypeScript. The member-access target (out._) is unaffected — a
+// lone underscore is itself a valid TS identifier — so only the local name is
+// repaired.
+func TestEmitOptionalField_emptyVarNameFallsBackToFieldVal(t *testing.T) {
+	r := &Registry{}
+	var w strings.Builder
+	r.emitOptionalField(&w, &fieldInfo{WireName: "_", TSType: tsString, Optional: true}, "$.x")
+	out := w.String()
+	mustContain(t, "opt-empty-varname", out, `const fieldVal = optStr(o, "_", "$.x");`)
+	mustContain(t, "opt-empty-varname", out, `if (fieldVal !== undefined) out._ = fieldVal;`)
+	mustNotContain(t, "opt-empty-varname", out, "const  =")
+}

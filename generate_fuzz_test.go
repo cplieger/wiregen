@@ -1,6 +1,8 @@
 package wiregen_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cplieger/wiregen"
@@ -30,24 +32,32 @@ func FuzzGenerate(f *testing.F) {
 		r.SSEEvents = []wiregen.SSERegEntry{
 			{EventType: eventType, TypeName: typeName},
 		}
-
-		// GenerateTypes should never panic
-		_ = r.GenerateTypes()
-
-		// GenerateDecoders should only panic if ValidatorsImport empty
-		func() {
-			defer func() { recover() }()
-			_ = r.GenerateDecoders()
-		}()
-
-		// GenerateRegistry should only panic if BusImport empty (non-self-contained)
-		func() {
-			defer func() { recover() }()
-			_ = r.GenerateRegistry()
-		}()
-
-		// GenerateConstants should never panic
 		r.Constants = []wiregen.WireConst{{TSName: "X", Value: 42}}
-		_ = r.GenerateConstants()
+
+		// Generate must either fail cleanly (an empty required import) or write
+		// every file byte-identically to its matching per-file getter. This
+		// pins the write-orchestration (filename->content mapping plus the
+		// SSE/constants gating) that the string API never exercises, turning a
+		// crash-only target into one that asserts a real invariant.
+		dir := t.TempDir()
+		if err := r.Generate(dir); err != nil {
+			return // empty ValidatorsImport/BusImport: the getters would panic
+		}
+		files := []struct{ name, want string }{
+			{"types.gen.ts", r.GenerateTypes()},
+			{"decoders.gen.ts", r.GenerateDecoders()},
+			{"registry.gen.ts", r.GenerateRegistry()},
+			{"constants.gen.ts", r.GenerateConstants()},
+		}
+		for _, fc := range files {
+			got, err := os.ReadFile(filepath.Join(dir, fc.name))
+			if err != nil {
+				t.Errorf("Generate(validators=%q bus=%q) did not write %s: %v", validatorsImport, busImport, fc.name, err)
+				continue
+			}
+			if string(got) != fc.want {
+				t.Errorf("Generate %s differs from getter (event=%q type=%q):\ndisk:\n%s\ngetter:\n%s", fc.name, eventType, typeName, got, fc.want)
+			}
+		}
 	})
 }

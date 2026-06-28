@@ -1,6 +1,7 @@
 package wiregen
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -34,6 +35,7 @@ type fieldInfo struct {
 	Depth      int
 	Optional   bool
 	JSONString bool
+	Tagged     bool // wire name came from an explicit json tag
 	IsSlice    bool
 	IsMap      bool
 	IsStruct   bool
@@ -118,14 +120,21 @@ func loadConfig() *packages.Config {
 	}
 }
 
-// packagesError returns the first load/type error reported across pkgs, or nil.
+// packagesError aggregates every load/type error reported across pkgs, or
+// returns nil. Reporting all errors at once lets a consumer fix a
+// multi-package or multi-error misconfiguration in a single run.
 func packagesError(pkgs []*packages.Package) error {
+	var errs []error
 	for _, pkg := range pkgs {
 		for _, e := range pkg.Errors {
-			return fmt.Errorf("wiregen: package %s: %s", pkg.PkgPath, e.Msg)
+			msg := e.Msg
+			if e.Pos != "" {
+				msg = e.Pos + ": " + e.Msg
+			}
+			errs = append(errs, fmt.Errorf("wiregen: package %s: %s", pkg.PkgPath, msg))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // indexPackages returns every package in the import graph rooted at pkgs,
@@ -271,6 +280,11 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 		return nil
 	}
 	visited[st] = true
+	// Scope visited to the current ancestry path: a struct on its own path is
+	// a real cycle (skipped above), but a common base reached via two sibling
+	// embeds (diamond) must be walked on both paths so its duplicated fields
+	// collide at equal depth and drop in dedupJSONFields (encoding/json behavior).
+	defer delete(visited, st)
 
 	var raw []fieldInfo
 	for i := range st.NumFields() {
@@ -279,7 +293,7 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 			continue // unexported (or embedded unexported) — skip
 		}
 		if f.Anonymous() {
-			raw = append(raw, e.flattenEmbedded(f, pkg, allPkgs, depth, visited)...)
+			raw = append(raw, e.resolveEmbeddedField(f, st.Tag(i), depth, pkg, allPkgs, visited)...)
 			continue
 		}
 		if fi, ok := e.resolveTaggedField(f, st.Tag(i), depth, pkg, allPkgs); ok {
@@ -287,6 +301,21 @@ func (e *astEngine) resolveStructFields(st *types.Struct, pkg *packages.Package,
 		}
 	}
 	return dedupJSONFields(raw)
+}
+
+// resolveEmbeddedField handles an anonymous (embedded) struct field per
+// encoding/json promotion rules: an embed carrying an explicit json name
+// is a NAMED nested field (resolved like a normal tagged field, with
+// json:"-" skipping it), while an untagged embed is flattened into the
+// parent.
+func (e *astEngine) resolveEmbeddedField(f *types.Var, tag string, depth int, pkg *packages.Package, allPkgs map[string]*packages.Package, visited map[*types.Struct]bool) []fieldInfo {
+	if name, _, _ := strings.Cut(reflect.StructTag(tag).Get("json"), ","); name != "" {
+		if fi, ok := e.resolveTaggedField(f, tag, depth, pkg, allPkgs); ok {
+			return []fieldInfo{fi}
+		}
+		return nil
+	}
+	return e.flattenEmbedded(f, pkg, allPkgs, depth, visited)
 }
 
 // flattenEmbedded resolves the fields promoted from an anonymous (embedded)
@@ -335,9 +364,10 @@ func (e *astEngine) resolveTaggedField(f *types.Var, tag string, depth int, pkg 
 		}
 	}
 
-	fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth, allPkgs)
+	fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth)
 	// Field doc comment from AST, scoped to this field's declaration.
 	fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
+	fi.Tagged = parts[0] != "" // wire name from an explicit json tag (dominantField tiebreak)
 	return fi, true
 }
 
@@ -362,7 +392,7 @@ func dedupJSONFields(raw []fieldInfo) []fieldInfo {
 			ent.field = fi
 			ent.count = 1
 		} else if fi.Depth == ent.field.Depth {
-			ent.count++
+			ent.field, ent.count = equalDepthWinner(&ent.field, ent.count, &fi)
 		}
 	}
 
@@ -381,7 +411,23 @@ func dedupJSONFields(raw []fieldInfo) []fieldInfo {
 	return result
 }
 
-func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, jsonString bool, depth int, _ map[string]*packages.Package) fieldInfo {
+// equalDepthWinner applies encoding/json's equal-depth promotion
+// tiebreak: a tagged field dominates an untagged one; two fields that
+// are both tagged or both untagged at the same depth are an ambiguous
+// promotion (count is bumped so the caller drops the wire name).
+// Returns the winning field and its updated tie count.
+func equalDepthWinner(cur *fieldInfo, curCount int, cand *fieldInfo) (winner fieldInfo, count int) {
+	switch {
+	case cand.Tagged && !cur.Tagged:
+		return *cand, 1 // tagged field dominates at equal depth
+	case !cand.Tagged && cur.Tagged:
+		return *cur, curCount // keep the tagged winner; not a real collision
+	default:
+		return *cur, curCount + 1
+	}
+}
+
+func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, jsonString bool, depth int) fieldInfo {
 	fi := fieldInfo{
 		WireName:   wireName,
 		Optional:   omitempty,
@@ -389,7 +435,6 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		Depth:      depth,
 	}
 
-	origType := t
 	// Unwrap pointer
 	if ptr, ok := t.(*types.Pointer); ok {
 		fi.Optional = true
@@ -406,7 +451,7 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 
 	switch ut := t.(type) {
 	case *types.Alias:
-		return e.resolveFieldType(types.Unalias(ut), wireName, fi.Optional, jsonString, depth, nil)
+		return e.resolveFieldType(types.Unalias(ut), wireName, fi.Optional, jsonString, depth)
 	case *types.Named:
 		return e.resolveNamedType(ut, &fi, wireName, jsonString, depth)
 	case *types.Basic:
@@ -425,12 +470,7 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		return fi
 	case *types.Pointer:
 		fi.Optional = true
-		return e.resolveFieldType(ut.Elem(), wireName, true, jsonString, depth, nil)
-	}
-
-	// Map type also makes field optional (same as reflect engine)
-	if _, isMap := origType.(*types.Map); isMap {
-		fi.Optional = true
+		return e.resolveFieldType(ut.Elem(), wireName, true, jsonString, depth)
 	}
 
 	fi.TSType = tsUnknown
@@ -466,6 +506,11 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 		fi.IsRaw = true
 		return *fi
 	}
+	// json.Number -> number (encoding/json marshals it as an unquoted number)
+	if pkgPath == "encoding/json" && name == "Number" {
+		fi.TSType = tsNumber
+		return *fi
+	}
 
 	// Check if it's a registered enum
 	if _, ok := e.r.Enums[name]; ok {
@@ -484,7 +529,7 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 	}
 
 	// Recurse into underlying type
-	return e.resolveFieldType(ut.Underlying(), wireName, fi.Optional, jsonString, depth, nil)
+	return e.resolveFieldType(ut.Underlying(), wireName, fi.Optional, jsonString, depth)
 }
 
 // resolveSliceType resolves a slice field. []byte maps to string (base64);
@@ -497,7 +542,7 @@ func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
 		return *fi
 	}
 	fi.IsSlice = true
-	elemFI := e.resolveFieldType(elem, "", false, false, 0, nil)
+	elemFI := e.resolveFieldType(elem, "", false, false, 0)
 	fi.TSType = elemFI.TSType + "[]"
 	fi.SliceElem = elemFI.TSType
 	// elemFI.GoTypeName is already keyed correctly: the short Go name for a
@@ -510,11 +555,12 @@ func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
 }
 
 // resolveMapType resolves a map field into Record<string, V>. The field is
-// always optional (a nil map omits in JSON).
+// forced optional for ergonomics; a nil map marshals to null (it is omitted
+// only when the field carries omitempty).
 func (e *astEngine) resolveMapType(ut *types.Map, fi *fieldInfo) fieldInfo {
 	fi.IsMap = true
 	fi.Optional = true
-	valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0, nil)
+	valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0)
 	fi.TSType = "Record<string, " + valFI.TSType + ">"
 	fi.MapVal = valFI.TSType
 	// See the slice case: use the element's resolved key, not typeKey(elem).
@@ -730,7 +776,7 @@ func basicToTS(b *types.Basic) string {
 	case types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
 		types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64,
 		types.Float32, types.Float64, types.UntypedInt, types.UntypedFloat:
-		return "number"
+		return tsNumber
 	default:
 		return tsUnknown
 	}

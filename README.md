@@ -104,10 +104,10 @@ Discriminated unions are declared in Go **source** with a directive on the seale
 
 ### Methods
 
-- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir`. Does **not** write `validators.ts` by default (see `GenerateValidators` below).
-- `(*Registry).GenerateTypes() string` — returns types file content.
-- `(*Registry).GenerateDecoders() string` — returns decoders file content. Panics if `ValidatorsImport` is empty.
-- `(*Registry).GenerateRegistry() string` — returns registry file content. Panics if `BusImport` is empty and `SelfContainedRegistry` is false.
+- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir` atomically (each file is staged to a temp sibling and renamed into place, so a mid-run failure never leaves a half-updated directory). Returns an error — it does **not** panic — when a required import is missing: `ValidatorsImport` empty, or (only when there are SSE events to register) `BusImport` empty while `SelfContainedRegistry` is false. It writes nothing in that case. The import-validating string getters panic instead — `GenerateDecoders` on an empty `ValidatorsImport`, and `GenerateRegistry` on an empty `BusImport` (with `SelfContainedRegistry` false) regardless of whether SSE events are present. Does **not** write `validators.ts` by default (see `GenerateValidators` below).
+- `(*Registry).GenerateTypes() string` — returns types file content. Panics on a package-load or type-resolution failure (the error `Generate` would return).
+- `(*Registry).GenerateDecoders() string` — returns decoders file content. Panics if `ValidatorsImport` is empty, or on a package-load or type-resolution failure.
+- `(*Registry).GenerateRegistry() string` — returns registry file content. Panics if `BusImport` is empty while `SelfContainedRegistry` is false, or if `SelfContainedRegistry` is true while `ValidatorsImport` is empty.
 - `(*Registry).GenerateConstants() string` — returns constants file content.
 - `(*Registry).GenerateValidators() string` — returns a starter `validators.ts` containing the full 11-function contract (`asObject`, `asArray`, `reqStr`, `reqNum`, `reqBool`, `optStr`, `optNum`, `optBool`, `reqOneOf<T>`, `decodeArray<T>`, `decodeRecord<T>`) plus the `Decoder<T>` type. The emitted file is consumer-editable (NOT stamped "DO NOT EDIT") — copy it once, then own it. **Opt-in only:** `Generate(outDir)` does not write `validators.ts`; consumers must explicitly call `GenerateValidators()` and write the result themselves.
 

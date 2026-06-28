@@ -430,6 +430,27 @@ func TestNewRegistry_WithRegistryFuncName(t *testing.T) {
 	}
 }
 
+func TestNewRegistry_FuncNameSanitized(t *testing.T) {
+	// Non-identifier func-name knobs are sanitized to valid TS identifiers
+	// (mirrors the other identifier knobs); valid names are byte-identical.
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+		wiregen.WithRegisterFuncName("2reg ister"),
+		wiregen.WithRegistryFuncName("init All!"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Notification]()}
+	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "notif", TypeName: "Notification"}}
+	out := r.GenerateRegistry()
+	if !strings.Contains(out, "import { register }") || strings.Contains(out, "2reg ister") {
+		t.Errorf("expected sanitized register func name 'register', got:\n%s", out)
+	}
+	if !strings.Contains(out, "export function initAll()") || strings.Contains(out, "init All!") {
+		t.Errorf("expected sanitized registry func name 'initAll', got:\n%s", out)
+	}
+}
+
 func TestNewRegistry_NilOptionsIgnored(t *testing.T) {
 	r := wiregen.NewRegistry(nil, nil, wiregen.WithValidatorsImport("./v.js"), nil)
 	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}

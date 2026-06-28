@@ -23,13 +23,18 @@ A `Registry` is built in two phases (`wiregen.go`):
 
 Types are registered by identity with the compile-time-safe
 `TypeRef[T]()` helper, which captures the `{PkgPath, Name}` pair. Then
-`Generate(outDir)` writes the files, or the per-file generators
+`Generate(outDir)` writes the files **atomically** — it builds each
+file's content in memory, then stages it to a temp sibling and renames it
+into place (`writeFilesAtomically`), so a mid-run failure never leaves a
+half-updated output directory — or the per-file generators
 (`GenerateTypes`, `GenerateDecoders`, `GenerateRegistry`,
 `GenerateConstants`) return strings.
 
-Note the panics by design: `GenerateDecoders` panics if
-`ValidatorsImport` is empty, and `GenerateRegistry` panics if `BusImport`
-is empty and `SelfContainedRegistry` is false.
+`Generate` validates required imports up front and returns an error (it
+does **not** panic). The string getters keep the panic-by-design
+contract: `GenerateDecoders` panics if `ValidatorsImport` is empty, and
+`GenerateRegistry` panics if `BusImport` is empty and
+`SelfContainedRegistry` is false.
 
 Discriminated unions are declared in Go source on a sealed interface with
 a directive comment:
@@ -43,17 +48,30 @@ This emits `export type EventData = CoverageEvent | NotifyEvent |
 ScanEvent`. A runtime union decoder is emitted only when
 `DiscriminatorMap[EventData]` is set (see `testdata/unions/`).
 
-## Two contracts that must be preserved
+## Contracts that must be preserved
 
 These are load-bearing; changes that break them are bugs, not features.
 
 - **encoding/json fidelity.** The AST field walk mirrors `encoding/json`
   exactly: unexported fields are skipped, `[]byte` → `string` (base64),
   `time.Time` → `string`, `json.RawMessage` and `interface{}` →
-  `unknown`, embedded named structs are flattened, `omitzero` (Go 1.24+)
-  is treated like `omitempty`, `json:",string"` types the field as
-  `string`, and map keys are always `string`. When extending the walk,
-  match `encoding/json`'s behavior.
+  `unknown`, `json.Number` → `number`, embedded named structs are
+  flattened, `omitzero` (Go 1.24+) is treated like `omitempty`,
+  `json:",string"` types the field as `string`, and map keys are always
+  `string`. Field promotion follows the shallowest-wins rule: a tagged
+  field dominates an untagged one at equal depth, and a field reachable
+  through two sibling embeds at equal depth (a "diamond") is dropped as
+  an ambiguous promotion. When extending the walk, match
+  `encoding/json`'s behavior.
+- **Generated identifiers are valid TypeScript.** Every consumer- or
+  source-derived string that lands in an identifier position (the name
+  overrides, the registry func-name knobs, a `//wiregen:union`
+  discriminator, field wire names, decoder local variables) is sanitized
+  to a valid TS identifier with a safe fallback, and a non-identifier
+  JSON key is emitted as a quoted property + bracket access. Sanitizing
+  is a no-op for already-valid identifiers, so don't "simplify" a sink
+  back to a raw emit — that reintroduces non-compiling output for
+  edge-case input.
 - **Unsupported by design.** Go generics, the nullable-vs-optional
   distinction, `tstype` tag hints, and inline anonymous struct fields are
   deliberate non-goals, not TODOs. `TypeMappings` is the registry-level

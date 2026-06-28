@@ -164,11 +164,14 @@ The consumer's validators module (at `ValidatorsImport`) must export:
 - **Doc comments** on registered structs and their fields are carried through to `/** … */` JSDoc on the generated interfaces (the AST engine reads them from source).
 - **Unexported fields** are skipped (matching `encoding/json` behavior).
 - **`time.Time`** maps to `string`; **`json.RawMessage`** and `interface{}` map to `unknown`.
+- **`json.Number`** maps to `number`.
 - **`[]byte`** maps to `string` (JSON encodes `[]byte` as base64).
 - **`omitzero`** (Go 1.24+) is treated the same as `omitempty` — the field becomes optional.
 - **`json:",string"`** causes the field to be typed as `string` and decoded with `reqStr`/`optStr`, matching `encoding/json`'s string-wrapping behavior for numbers and booleans.
 - **Map keys** are always `string` in generated TS because JSON object keys are strings regardless of the Go map key type.
-- **Embedded structs** are flattened into the embedding interface (matching `encoding/json`).
+- **Embedded named structs** are flattened into the embedding interface, and field promotion matches `encoding/json`'s rules: the shallowest field wins, a tagged field dominates an untagged one at equal depth, and a field reachable through two sibling embeds at equal depth (a "diamond") is dropped as an ambiguous promotion.
+- **Generated identifiers are always valid TypeScript.** Consumer- or source-derived strings that land in an identifier position — struct/enum name overrides, the registry function-name knobs, a `//wiregen:union` discriminator, field wire names, and decoder local variables — are sanitized to a valid TS identifier (with a safe fallback when a value sanitizes to empty). A JSON key that isn't a valid identifier (e.g. `content-type`) is emitted as a quoted property and bracket access (`out["content-type"]`). Values that are already valid identifiers are emitted unchanged, so output stays byte-identical for the common case.
+- **A zero-value enum** (no discoverable `const` values and no explicit `Values`) emits `export type X = never;` rather than the invalid `export type X = ;`.
 - **`Generate`** writes `types.gen.ts` + `decoders.gen.ts` always; `registry.gen.ts` only when there are SSE events; `constants.gen.ts` only when there are constants.
 - **`PackagePaths`** defaults to the distinct packages of the registered types; set it explicitly only to load extra packages.
 - **Enum `Values`** are auto-discovered from the named type's `const` declarations (in source order) when left empty; provide them explicitly to override the set or order.

@@ -2,7 +2,6 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen.svg)](https://pkg.go.dev/github.com/cplieger/wiregen)
 [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/wiregen)](https://github.com/cplieger/wiregen/blob/main/go.mod)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/wiregen)](https://goreportcard.com/report/github.com/cplieger/wiregen)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/coverage.json)](https://github.com/cplieger/wiregen/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/mutation.json)](https://github.com/cplieger/wiregen/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13226/badge)](https://www.bestpractices.dev/projects/13226)
@@ -186,6 +185,12 @@ The following are intentionally not supported:
 | **Nullable vs optional distinction** | `T \| null` vs `?:` — current consumers treat null and absent identically. Pointer/omitempty → optional only.                                                         |
 | **`tstype` struct tag hints**        | `TypeMappings` provides the same escape hatch at the registry level.                                                                                                  |
 | **Inline anonymous struct fields**   | A field whose type is an inline `struct { … }` literal maps to `unknown`. Register it as a named type instead. (Embedded _named_ structs are flattened, not unknown.) |
+
+## Disclaimer
+
+This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
+
+This project was built with AI-assisted tooling using [Claude Opus](https://www.anthropic.com/claude) and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 
 ## License
 

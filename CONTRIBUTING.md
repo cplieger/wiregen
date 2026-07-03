@@ -53,16 +53,9 @@ ScanEvent`. A runtime union decoder is emitted only when
 These are load-bearing; changes that break them are bugs, not features.
 
 - **encoding/json fidelity.** The AST field walk mirrors `encoding/json`
-  exactly: unexported fields are skipped, `[]byte` → `string` (base64),
-  `time.Time` → `string`, `json.RawMessage` and `interface{}` →
-  `unknown`, `json.Number` → `number`, embedded named structs are
-  flattened, `omitzero` (Go 1.24+) is treated like `omitempty`,
-  `json:",string"` types the field as `string`, and map keys are always
-  `string`. Field promotion follows the shallowest-wins rule: a tagged
-  field dominates an untagged one at equal depth, and a field reachable
-  through two sibling embeds at equal depth (a "diamond") is dropped as
-  an ambiguous promotion. When extending the walk, match
-  `encoding/json`'s behavior.
+  exactly; the full rule set is enumerated in the README's
+  "[Behavior notes](README.md#behavior-notes)". When extending the walk,
+  match `encoding/json`'s behavior rather than reimplementing it.
 - **Generated identifiers are valid TypeScript.** Every consumer- or
   source-derived string that lands in an identifier position (the name
   overrides, the registry func-name knobs, a `//wiregen:union`

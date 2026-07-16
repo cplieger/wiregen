@@ -345,6 +345,39 @@ func TestDecoderMappings(t *testing.T) {
 	}
 }
 
+// TestDecoderMappings_CollectionElement pins the mapped-element routing: a
+// slice of a DecoderMappings-mapped type decodes per element through
+// decodeArray — never as a whole-field scalar mapped call, which would hand
+// the raw array to a scalar decoder — and the element decoder's synthesized
+// single-key object carries the real wire name and type path so its error
+// messages locate the actual field (the index prefix comes from decodeArray).
+func TestDecoderMappings_CollectionElement(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasMappedSlice]()}
+	r.TypeMappings = map[string]string{
+		"github.com/cplieger/wiregen/testdata/basic.CustomID": "string",
+	}
+	r.DecoderMappings = map[string]string{
+		"github.com/cplieger/wiregen/testdata/basic.CustomID": "reqStr",
+	}
+	out := r.GenerateTypes()
+	if !strings.Contains(out, "  ids: string[];") {
+		t.Errorf("mapped slice element should type as string[], got:\n%s", out)
+	}
+	dec := r.GenerateDecoders()
+	want := `ids: o["ids"] === null ? [] : decodeArray(o["ids"], (v) => reqStr({"ids": v} as Record<string, unknown>, "ids", "$.has_mapped_slice"), "$.has_mapped_slice.ids"),`
+	if !strings.Contains(dec, want) {
+		t.Errorf("mapped slice should decode per element, missing %q, got:\n%s", want, dec)
+	}
+	if strings.Contains(dec, `ids: reqStr(o, "ids"`) {
+		t.Errorf("mapped slice must not decode as a whole-field scalar mapped call, got:\n%s", dec)
+	}
+}
+
 func TestTypeMappingsWithoutDecoder(t *testing.T) {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
@@ -651,6 +684,47 @@ func TestGenerate_PackageLoadFailureErrors(t *testing.T) {
 	if err := r.Generate(t.TempDir()); err == nil {
 		t.Fatal("expected error for non-existent package, got nil")
 	}
+}
+
+// TestGenerate_RejectsUnsanitizableConstant pins the constants validation: a
+// WireConst whose TSName sanitizes to an empty TS identifier is a Generate
+// error (previously it was silently dropped from constants.gen.ts), and
+// nothing is written.
+func TestGenerate_RejectsUnsanitizableConstant(t *testing.T) {
+	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./v.js"))
+	r.Constants = []wiregen.WireConst{
+		{TSName: "MaxRetries", Value: 3},
+		{TSName: "404", Value: 5}, // digits only — sanitizes to ""
+	}
+	dir := t.TempDir()
+	err := r.Generate(dir)
+	if err == nil {
+		t.Fatal("expected error for unsanitizable constant TSName, got nil")
+	}
+	if !strings.Contains(err.Error(), `"404"`) {
+		t.Errorf("error should name the offending TSName, got: %v", err)
+	}
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Generate must write nothing on a constants validation error, found %d entries", len(entries))
+	}
+}
+
+// TestGenerateConstants_PanicsOnUnsanitizableName pins the string getter's
+// side of the split error model: like the other per-file generators it panics
+// on the config error Generate returns.
+func TestGenerateConstants_PanicsOnUnsanitizableName(t *testing.T) {
+	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./v.js"))
+	r.Constants = []wiregen.WireConst{{TSName: "!!!", Value: 1}} // no identifier-safe runes
+	defer func() {
+		if recover() == nil {
+			t.Error("expected GenerateConstants to panic on unsanitizable TSName")
+		}
+	}()
+	_ = r.GenerateConstants()
 }
 
 // --- empty / constants-only registries ---

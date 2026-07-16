@@ -23,11 +23,7 @@ type WireType struct {
 // TypeRef registers a concrete Go type for TS generation. A typo or
 // nonexistent type is a compile error — the generic constraint ensures T exists.
 func TypeRef[T any]() WireType {
-	var zero T
-	t := reflect.TypeOf(zero)
-	if t == nil {
-		t = reflect.TypeFor[T]()
-	}
+	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -237,10 +233,13 @@ func (r *Registry) initDefaults() {
 type genFile struct{ name, content string }
 
 // writeFilesAtomically stages every file as a temp sibling in outDir, then
-// renames them into place only after all temp writes succeed, so a mid-sequence
-// failure (disk full / ENOSPC) never leaves the committed wire/ directory
-// half-updated. Any temp left unrenamed on an error path is removed best-effort
-// on return.
+// renames them into place only after all temp writes succeed. A failure while
+// staging (the common case — e.g. disk full / ENOSPC) therefore leaves the
+// committed wire/ directory untouched, and each individual rename is atomic —
+// but the rename pass itself is sequential, so a failure mid-pass (e.g. outDir
+// removed concurrently) can leave a prefix of the files updated: the guarantee
+// is per-file atomicity, not a multi-file transaction. Any temp left unrenamed
+// on an error path is removed best-effort on return.
 func writeFilesAtomically(outDir string, files []genFile) error {
 	staged := make([]string, 0, len(files))
 	defer func() {
@@ -282,6 +281,9 @@ func (r *Registry) Generate(outDir string) error {
 	}
 	if len(r.SSEEvents) > 0 && !r.SelfContainedRegistry && r.BusImport == "" {
 		return errors.New("wiregen: BusImport must be set when SelfContainedRegistry is false")
+	}
+	if err := r.validateConstants(); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", outDir, err)
@@ -356,12 +358,30 @@ func (r *Registry) GenerateRegistry() string {
 	return b.String()
 }
 
-// GenerateConstants returns the constants.gen.ts content as a string.
+// GenerateConstants returns the constants.gen.ts content as a string. Like
+// the other per-file string generators it panics on a config error — a
+// registered constant whose TSName sanitizes to an empty TS identifier —
+// where Generate returns an error instead.
 func (r *Registry) GenerateConstants() string {
 	r.init()
+	if err := r.validateConstants(); err != nil {
+		panic(err.Error())
+	}
 	var b strings.Builder
 	r.generateConstants(&b)
 	return b.String()
+}
+
+// validateConstants rejects any registered WireConst whose TSName sanitizes
+// to an empty TS identifier — previously such a constant was silently dropped
+// from constants.gen.ts, making a misconfigured driver invisible.
+func (r *Registry) validateConstants() error {
+	for _, c := range r.Constants {
+		if sanitizeTSIdent(c.TSName) == "" {
+			return fmt.Errorf("wiregen: constant %q (value %d) has no TS-identifier-safe characters in its TSName", c.TSName, c.Value)
+		}
+	}
+	return nil
 }
 
 // GenerateValidators returns the opt-in validators starter module as a string:
@@ -538,12 +558,38 @@ func sanitizeVarName(wireName string) string {
 		return ""
 	}
 
-	switch s {
-	case "o", "out", "v", "private", "public", "protected", "class",
-		"return", "delete", "default", "export", "import", "new", "this":
+	if tsReservedWords[s] {
 		return s + "Val"
 	}
 	return s
+}
+
+// tsReservedWords are the identifiers sanitizeVarName must never emit as a
+// generated `const` binding name: the ES keyword set plus the strict-mode
+// reserved words (generated files are ES modules, which are always strict),
+// `await` (reserved at module level), the strict-mode restricted binding
+// names `eval`/`arguments`, the locals the decoder emit context already binds
+// (`o`, `out`, `v`), and the globals the emitted bodies reference (`undefined`
+// in optional-field guards, `TypeError` in inline element decoders) whose
+// shadowing would silently break the generated code.
+var tsReservedWords = map[string]bool{
+	// ES keywords
+	"break": true, "case": true, "catch": true, "class": true, "const": true,
+	"continue": true, "debugger": true, "default": true, "delete": true,
+	"do": true, "else": true, "enum": true, "export": true, "extends": true,
+	"false": true, "finally": true, "for": true, "function": true, "if": true,
+	"import": true, "in": true, "instanceof": true, "new": true, "null": true,
+	"return": true, "super": true, "switch": true, "this": true, "throw": true,
+	"true": true, "try": true, "typeof": true, "var": true, "void": true,
+	"while": true, "with": true,
+	// strict-mode reserved words, restricted binding names, module-level await
+	"implements": true, "interface": true, "let": true, "package": true,
+	"private": true, "protected": true, "public": true, "static": true,
+	"yield": true, "await": true, "eval": true, "arguments": true,
+	// decoder emit-context locals
+	"o": true, "out": true, "v": true,
+	// referenced globals whose shadowing breaks emitted code
+	"undefined": true, "TypeError": true,
 }
 
 // localVarName returns a non-empty TS-safe local variable name for wireName.
@@ -572,8 +618,6 @@ func tsStringLiteral(s string) string {
 			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
-		case '`':
-			b.WriteRune('`')
 		default:
 			b.WriteRune(r)
 		}
@@ -581,6 +625,12 @@ func tsStringLiteral(s string) string {
 	return b.String()
 }
 
+// isIdentReferenced reports whether ident occurs in body with identifier
+// boundaries on both sides. Import/const selection is owned by the
+// usedIdents collector (identifiers recorded at their emission sites), so
+// this scan runs ONLY over the consumer-supplied Type/DecoderMappings
+// expressions (usedIdents.opaque) — never over the generated body, whose
+// string literals (wire names, paths) could false-positively match.
 func isIdentReferenced(body, ident string) bool {
 	if ident == "" {
 		return false

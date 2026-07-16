@@ -196,6 +196,20 @@ func FuzzWireConstTSName(f *testing.F) {
 			Constants: []WireConst{{TSName: input, Value: 42}},
 		}
 		r.init()
+		// Cross-function consistency: validateConstants rejects exactly the
+		// TSNames that sanitize to an empty identifier (the silent-skip
+		// behavior this replaced); everything it accepts must emit a valid
+		// identifier below.
+		if err := r.validateConstants(); err != nil {
+			if sanitizeTSIdent(input) != "" {
+				t.Errorf("validateConstants rejected sanitizable TSName %q: %v", input, err)
+			}
+			return
+		}
+		if sanitizeTSIdent(input) == "" {
+			t.Errorf("validateConstants accepted TSName %q that sanitizes to empty", input)
+			return
+		}
 		var w strings.Builder
 		r.generateConstants(&w)
 		out := w.String()

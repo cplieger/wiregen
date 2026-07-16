@@ -135,6 +135,24 @@ func TestSanitizeVarName(t *testing.T) {
 		{"import", "importVal"},
 		{"new", "newVal"},
 		{"this", "thisVal"},
+		// full ES keyword set (previously missing from the escape list)
+		{"const", "constVal"},
+		{"let", "letVal"},
+		{"var", "varVal"},
+		{"function", "functionVal"},
+		{"typeof", "typeofVal"},
+		{"in", "inVal"},
+		{"case", "caseVal"},
+		// module-level / strict-mode restricted names
+		{"await", "awaitVal"},
+		{"eval", "evalVal"},
+		{"arguments", "argumentsVal"},
+		// referenced globals whose shadowing breaks emitted code
+		{"undefined", "undefinedVal"},
+		{"TypeError", "TypeErrorVal"},
+		// camelCasing runs before the reserved check: the joined form is not
+		// reserved, so no suffix
+		{"type_error", "typeError"},
 	}
 	for _, c := range cases {
 		eqStr(t, "sanitizeVarName", c.in, sanitizeVarName(c.in), c.want)
@@ -267,7 +285,7 @@ func TestEmitUnionDecoder_sanitizesDiscriminator(t *testing.T) {
 		{"@@@", "disc"},             // sanitizes to empty -> fallback
 	} {
 		var w strings.Builder
-		r.emitUnionDecoder(&w, &typeInfo{Name: "E", Union: &UnionDef{Discriminator: c.disc}})
+		r.emitUnionDecoder(&w, &typeInfo{Name: "E", Union: &UnionDef{Discriminator: c.disc}}, newUsedIdents())
 		if out := w.String(); !strings.Contains(out, "("+c.want+": string, v: unknown)") {
 			t.Errorf("discriminator %q: expected sanitized param %q in signature, got:\n%s", c.disc, c.want, out)
 		}

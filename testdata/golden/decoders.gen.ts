@@ -11,7 +11,7 @@ export const decodeAddress: Decoder<Address> = (v) => {
     street: reqStr(o, "street", "$.address"),
     city: reqStr(o, "city", "$.address"),
   };
-  const zip = optStr(o, "zip", "$.address");
+  const zip = o["zip"] === null ? undefined : optStr(o, "zip", "$.address");
   if (zip !== undefined) out.zip = zip;
   return out;
 };
@@ -19,7 +19,7 @@ export const decodeAddress: Decoder<Address> = (v) => {
 export const decodeHasBytes: Decoder<HasBytes> = (v) => {
   const o = asObject(v, "$.has_bytes");
   const out: HasBytes = {
-    data: reqStr(o, "data", "$.has_bytes"),
+    data: o["data"] === null ? "" : reqStr(o, "data", "$.has_bytes"),
     name: reqStr(o, "name", "$.has_bytes"),
   };
   return out;
@@ -30,7 +30,7 @@ export const decodeHasMap: Decoder<HasMap> = (v) => {
   const out: HasMap = {
     name: reqStr(o, "name", "$.has_map"),
   };
-  if (o["meta"] !== undefined) out.meta = decodeRecord(o["meta"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.has_map.meta");
+  if (o["meta"] !== undefined && o["meta"] !== null) out.meta = decodeRecord(o["meta"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.has_map.meta");
   return out;
 };
 
@@ -39,7 +39,7 @@ export const decodeHasTime: Decoder<HasTime> = (v) => {
   const out: HasTime = {
     created: reqStr(o, "created", "$.has_time"),
   };
-  const updated = optStr(o, "updated", "$.has_time");
+  const updated = o["updated"] === null ? undefined : optStr(o, "updated", "$.has_time");
   if (updated !== undefined) out.updated = updated;
   return out;
 };
@@ -61,11 +61,11 @@ export const decodeUser: Decoder<User> = (v) => {
     status: reqOneOf(o, "status", STATUSS, "$.user"),
     id: reqNum(o, "id", "$.user"),
   };
-  const age = optNum(o, "age", "$.user");
+  const age = o["age"] === null ? undefined : optNum(o, "age", "$.user");
   if (age !== undefined) out.age = age;
-  const email = optStr(o, "email", "$.user");
+  const email = o["email"] === null ? undefined : optStr(o, "email", "$.user");
   if (email !== undefined) out.email = email;
-  if (o["tags"] !== undefined) out.tags = decodeArray(o["tags"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.user.tags");
+  if (o["tags"] !== undefined && o["tags"] !== null) out.tags = decodeArray(o["tags"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.user.tags");
   return out;
 };
 

@@ -97,9 +97,9 @@ func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
 func TestEmitOptionalField_nonIdentWireNameUsesBracketRef(t *testing.T) {
 	r := &Registry{}
 	var w strings.Builder
-	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Optional: true}, "$.x")
+	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
 	out := w.String()
-	mustContain(t, "opt-nonident", out, `const contenttype = optStr(o, "content-type", "$.x");`)
+	mustContain(t, "opt-nonident", out, `const contenttype = o["content-type"] === null ? undefined : optStr(o, "content-type", "$.x");`)
 	mustContain(t, "opt-nonident", out, `if (contenttype !== undefined) out["content-type"] = contenttype;`)
 }
 
@@ -114,9 +114,9 @@ func TestEmitOptionalField_nonIdentWireNameUsesBracketRef(t *testing.T) {
 func TestEmitOptionalField_emptyVarNameFallsBackToFieldVal(t *testing.T) {
 	r := &Registry{}
 	var w strings.Builder
-	r.emitOptionalField(&w, &fieldInfo{WireName: "_", TSType: tsString, Optional: true}, "$.x")
+	r.emitOptionalField(&w, &fieldInfo{WireName: "_", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
 	out := w.String()
-	mustContain(t, "opt-empty-varname", out, `const fieldVal = optStr(o, "_", "$.x");`)
+	mustContain(t, "opt-empty-varname", out, `const fieldVal = o["_"] === null ? undefined : optStr(o, "_", "$.x");`)
 	mustContain(t, "opt-empty-varname", out, `if (fieldVal !== undefined) out._ = fieldVal;`)
 	mustNotContain(t, "opt-empty-varname", out, "const  =")
 }

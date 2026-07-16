@@ -77,7 +77,7 @@ func TestDecoders_OptionalEnumUsesReqOneOf(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasOptEnum]())
 	r.Enums = map[string]wiregen.EnumDef{"MyEnum": {Values: []string{"a", "b"}}}
 	dec := r.GenerateDecoders()
-	if !strings.Contains(dec, `if (o["status"] !== undefined) out.status = reqOneOf(o, "status", MY_ENUMS,`) {
+	if !strings.Contains(dec, `if (o["status"] !== undefined && o["status"] !== null) out.status = reqOneOf(o, "status", MY_ENUMS,`) {
 		t.Errorf("optional enum field should decode with guarded reqOneOf, got:\n%s", dec)
 	}
 }
@@ -88,7 +88,7 @@ func TestDecoders_OptionalEnumUsesReqOneOf(t *testing.T) {
 func TestDecoders_OptionalByteSliceUsesOptStr(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.OptionalByteSlice]())
 	dec := r.GenerateDecoders()
-	if !strings.Contains(dec, `const data = optStr(o, "data",`) {
+	if !strings.Contains(dec, `const data = o["data"] === null ? undefined : optStr(o, "data",`) {
 		t.Errorf("optional *[]byte should decode with optStr, got:\n%s", dec)
 	}
 	if strings.Contains(dec, `decodeArray(o["data"]`) {
@@ -113,7 +113,7 @@ func TestDecoders_UncoveredEmitBranches(t *testing.T) {
 			name:  "optional json-string field decodes via optStr",
 			types: []wiregen.WireType{wiregen.TypeRef[edges.ManyOptions]()},
 			wants: []string{
-				`const a = optStr(o, "a", "$.many_options");`,
+				`const a = o["a"] === null ? undefined : optStr(o, "a", "$.many_options");`,
 				`if (a !== undefined) out.a = a;`,
 			},
 		},
@@ -142,5 +142,41 @@ func TestDecoders_UncoveredEmitBranches(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDecoders_NullHandling pins the JSON-null decode contract: a required
+// slice/map accepts null as empty (encoding/json marshals a nil non-omitempty
+// slice/map to null), an optional field treats present-null as absent in both
+// the guard-style and const-ternary branches, and the raw/interface
+// pass-throughs keep null as data. Nullable-vs-optional is a documented
+// non-goal: null and absent collapse to the same TS undefined.
+func TestDecoders_NullHandling(t *testing.T) {
+	dec := edgesReg(wiregen.TypeRef[edges.AllKinds]()).GenerateDecoders()
+	wants := []string{
+		// required slice: null -> empty array
+		`slice: o["slice"] === null ? [] : decodeArray(o["slice"],`,
+		// required []byte (base64 string on the wire; nil marshals null): null -> ""
+		`bytes: o["bytes"] === null ? "" : reqStr(o, "bytes", "$.all_kinds"),`,
+		// map fields are forced optional; present-null is skipped by the guard
+		`if (o["map"] !== undefined && o["map"] !== null) out.map = decodeRecord(o["map"],`,
+		// required raw/interface pass-throughs keep null as data (bare cast)
+		`raw: o["raw"] as unknown,`,
+		`iface: o["iface"] as unknown,`,
+	}
+	for _, want := range wants {
+		if !strings.Contains(dec, want) {
+			t.Errorf("AllKinds decoder missing %q\n--- output ---\n%s", want, dec)
+		}
+	}
+
+	dec = edgesReg(wiregen.TypeRef[edges.NestedOptPtr](), wiregen.TypeRef[edges.Inner]()).GenerateDecoders()
+	if want := `if (o["inner"] !== undefined && o["inner"] !== null) out.inner = decodeInner(o["inner"]);`; !strings.Contains(dec, want) {
+		t.Errorf("optional struct decoder missing null-skipping guard %q\n--- output ---\n%s", want, dec)
+	}
+
+	dec = edgesReg(wiregen.TypeRef[edges.AllOptional]()).GenerateDecoders()
+	if want := `const a = o["a"] === null ? undefined : optStr(o, "a", "$.all_optional");`; !strings.Contains(dec, want) {
+		t.Errorf("optional primitive decoder missing null ternary %q\n--- output ---\n%s", want, dec)
 	}
 }

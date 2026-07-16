@@ -24,11 +24,13 @@ func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
 }
 
 // emitEnumTypes writes the `export type X = "a" | "b";` string-union aliases,
-// deduplicated and sorted by TS name.
+// deduplicated and sorted by TS name. Dedup iterates Go names in sorted order
+// so a TS-name collision has a deterministic winner (the first Go name in
+// sort order), matching emitEnumConsts' dedup order.
 func (r *Registry) emitEnumTypes(w *strings.Builder) {
 	enumNames := make([]string, 0, len(r.Enums))
 	seenEnumTS := map[string]bool{}
-	for name := range r.Enums {
+	for _, name := range enumNamesSlice(r.Enums) {
 		tn := r.tsEnumName(name)
 		if seenEnumTS[tn] {
 			continue
@@ -119,40 +121,82 @@ func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
 
 // --- decoders generation ---
 
+// usedIdents accumulates the identifiers decoder emission actually uses, so
+// the import/const header lines are derived from what was emitted rather than
+// re-discovered by scanning the emitted text (a heuristic that could match an
+// identifier inside an emitted string literal). The one place text scanning
+// survives is `opaque`: Type/DecoderMappings values are consumer-supplied TS
+// expressions emitted verbatim, so any contract helper, type name, or enum
+// const array they reference is found by scanning those (small) expressions —
+// never the generated body.
+type usedIdents struct {
+	helpers map[string]bool // validators-contract helpers called
+	types   map[string]bool // TS type / enum-type names referenced
+	enums   map[string]bool // Go enum names whose const value array is referenced
+	opaque  []string        // consumer-supplied mapping expressions emitted verbatim
+}
+
+func newUsedIdents() *usedIdents {
+	return &usedIdents{
+		helpers: map[string]bool{},
+		types:   map[string]bool{},
+		enums:   map[string]bool{},
+	}
+}
+
+func (u *usedIdents) helper(name string)    { u.helpers[name] = true }
+func (u *usedIdents) typeRef(tsName string) { u.types[tsName] = true }
+func (u *usedIdents) enumUse(goName string) { u.enums[goName] = true }
+func (u *usedIdents) opaqueExpr(expr string) {
+	u.opaque = append(u.opaque, expr)
+}
+
+// opaqueRefs reports whether any consumer-supplied mapping expression
+// references ident.
+func (u *usedIdents) opaqueRefs(ident string) bool {
+	for _, expr := range u.opaque {
+		if isIdentReferenced(expr, ident) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
 	if r.ValidatorsImport == "" {
 		panic("wiregen: ValidatorsImport must be set")
 	}
-	body := r.decoderBodies(engine)
+	body, used := r.decoderBodies(engine)
 
 	w.WriteString(r.HeaderComment)
-	r.emitHelperImports(w, body)
-	r.emitTypeImports(w, body, engine)
-	r.emitEnumConsts(w, body)
+	r.emitHelperImports(w, used)
+	r.emitTypeImports(w, used, engine)
+	r.emitEnumConsts(w, used)
 	w.WriteString(body)
 }
 
 // decoderBodies emits the struct decoders followed by the union decoders and
-// returns the concatenated body (used to decide which imports/consts the
-// header needs).
-func (r *Registry) decoderBodies(engine *astEngine) string {
+// returns the concatenated body plus the identifiers it used (which decide
+// the import/const header lines).
+func (r *Registry) decoderBodies(engine *astEngine) (string, *usedIdents) {
 	var bodies strings.Builder
+	used := newUsedIdents()
 	for _, ti := range engine.types {
 		if ti.Union == nil {
-			r.emitDecoder(&bodies, ti)
+			r.emitDecoder(&bodies, ti, used)
 		}
 	}
 	for _, ti := range engine.types {
 		if ti.Union != nil {
-			r.emitUnionDecoder(&bodies, ti)
+			r.emitUnionDecoder(&bodies, ti, used)
 		}
 	}
-	return bodies.String()
+	return bodies.String(), used
 }
 
-// emitHelperImports writes the validators-module import, listing only the
-// contract helpers actually referenced by the decoder body.
-func (r *Registry) emitHelperImports(w *strings.Builder, body string) {
+// emitHelperImports writes the validators-module import, listing (in the
+// contract's canonical order) only the helpers the emitted decoders call.
+func (r *Registry) emitHelperImports(w *strings.Builder, used *usedIdents) {
 	allHelpers := []string{
 		"asObject", "asArray", "reqStr", "reqNum", "reqBool",
 		"optStr", "optNum", "optBool", "reqOneOf",
@@ -160,7 +204,7 @@ func (r *Registry) emitHelperImports(w *strings.Builder, body string) {
 	}
 	var usedHelpers []string
 	for _, h := range allHelpers {
-		if isIdentReferenced(body, h) {
+		if used.helpers[h] || used.opaqueRefs(h) {
 			usedHelpers = append(usedHelpers, h)
 		}
 	}
@@ -173,8 +217,8 @@ func (r *Registry) emitHelperImports(w *strings.Builder, body string) {
 }
 
 // emitTypeImports writes the `import type { … }` line for the type/enum names
-// referenced by the decoder body, sorted; it emits nothing when none are used.
-func (r *Registry) emitTypeImports(w *strings.Builder, body string, engine *astEngine) {
+// the emitted decoders reference, sorted; it emits nothing when none are used.
+func (r *Registry) emitTypeImports(w *strings.Builder, used *usedIdents, engine *astEngine) {
 	candidateNames := make([]string, 0)
 	for _, ti := range engine.types {
 		candidateNames = append(candidateNames, r.tsName(ti.Name))
@@ -189,30 +233,30 @@ func (r *Registry) emitTypeImports(w *strings.Builder, body string, engine *astE
 	}
 	usedSet := map[string]bool{}
 	for _, n := range candidateNames {
-		if isIdentReferenced(body, n) {
+		if used.types[n] || used.opaqueRefs(n) {
 			usedSet[n] = true
 		}
 	}
-	used := make([]string, 0, len(usedSet))
+	sorted := make([]string, 0, len(usedSet))
 	for n := range usedSet {
-		used = append(used, n)
+		sorted = append(sorted, n)
 	}
-	sort.Strings(used)
-	if len(used) > 0 {
+	sort.Strings(sorted)
+	if len(sorted) > 0 {
 		w.WriteString("import type { ")
-		w.WriteString(strings.Join(used, ", "))
+		w.WriteString(strings.Join(sorted, ", "))
 		w.WriteString(" } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
 	}
 	w.WriteString("\n")
 }
 
 // emitEnumConsts writes the `const XS = [...] as const;` value arrays for the
-// enums referenced by the decoder body (deduped), then a trailing blank line.
-func (r *Registry) emitEnumConsts(w *strings.Builder, body string) {
+// enums the emitted decoders reference (deduped), then a trailing blank line.
+func (r *Registry) emitEnumConsts(w *strings.Builder, used *usedIdents) {
 	emitted := map[string]bool{}
 	for _, name := range enumNamesSlice(r.Enums) {
 		constN := r.enumConstName(name)
-		if emitted[constN] || !isIdentReferenced(body, constN) {
+		if emitted[constN] || (!used.enums[name] && !used.opaqueRefs(constN)) {
 			continue
 		}
 		emitted[constN] = true
@@ -231,9 +275,11 @@ func (r *Registry) emitEnumConsts(w *strings.Builder, body string) {
 	}
 }
 
-func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo) {
+func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo, used *usedIdents) {
 	tn := r.tsName(ti.Name)
 	path := "$." + r.pathName(tn)
+	used.helper("asObject")
+	used.typeRef(tn)
 	w.WriteString("export const " + r.decoderName(ti.Name) + ": Decoder<" + tn + "> = (v) => {\n")
 	w.WriteString("  const o = asObject(v, \"" + path + "\");\n")
 
@@ -249,7 +295,7 @@ func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo) {
 	if len(reqFields) > 0 || len(optFields) > 0 {
 		w.WriteString("  const out: " + tn + " = {\n")
 		for _, f := range reqFields {
-			w.WriteString("    " + tsPropName(f.WireName) + ": " + r.reqExpr(&f, path) + ",\n")
+			w.WriteString("    " + tsPropName(f.WireName) + ": " + r.reqExpr(&f, path, used) + ",\n")
 		}
 		w.WriteString("  };\n")
 	} else {
@@ -257,19 +303,20 @@ func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo) {
 	}
 
 	for _, f := range optFields {
-		r.emitOptionalField(w, &f, path)
+		r.emitOptionalField(w, &f, path, used)
 	}
 
 	w.WriteString("  return out;\n")
 	w.WriteString("};\n\n")
 }
 
-func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo) {
+func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *usedIdents) {
 	tn := r.tsName(ti.Name)
 	dm := r.DiscriminatorMap[ti.Name]
 	if dm == nil {
 		return // No discriminator map → only type alias emitted
 	}
+	used.typeRef(tn)
 
 	disc := sanitizeVarName(ti.Union.Discriminator)
 	if disc == "" {
@@ -294,35 +341,57 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo) {
 	w.WriteString("};\n\n")
 }
 
-func (r *Registry) reqExpr(f *fieldInfo, path string) string {
+func (r *Registry) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
 	wn := tsStringLiteral(f.WireName)
 	if f.JSONString {
+		used.helper("reqStr")
 		return "reqStr(o, \"" + wn + "\", \"" + path + "\")"
 	}
 	if f.IsRaw || f.IsIface {
 		return "o[\"" + wn + "\"] as unknown"
 	}
+	// []byte marshals as a base64 string, but a nil non-omitempty []byte
+	// marshals as null — accept null as the empty string (the same
+	// null-as-zero-value contract as collections).
+	if f.IsBytes {
+		used.helper("reqStr")
+		return "o[\"" + wn + "\"] === null ? \"\" : reqStr(o, \"" + wn + "\", \"" + path + "\")"
+	}
 
-	// Custom decoder mapping
+	// Collections are routed before the mapping checks: a slice/map field's
+	// GoTypeName holds its ELEMENT's mapping key (see resolveSliceType), so
+	// Type/DecoderMappings apply per element inside elemDecoderExpr, never to
+	// the collection as a whole. encoding/json marshals a nil non-omitempty
+	// slice/map to null, so a required collection accepts null as empty —
+	// nullable-vs-optional is a documented non-goal, and rejecting
+	// encoding/json's own nil-value output would be a fidelity bug.
+	if f.IsSlice {
+		used.helper("decodeArray")
+		return "o[\"" + wn + "\"] === null ? [] : decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\")"
+	}
+	if f.IsMap {
+		used.helper("decodeRecord")
+		return "o[\"" + wn + "\"] === null ? {} : decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\")"
+	}
+
+	// Custom decoder mapping (scalar field of a mapped type)
 	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
+		used.opaqueExpr(expr)
 		return expr + "(o, \"" + wn + "\", \"" + path + "\")"
 	}
 	// Custom type mapping without decoder
 	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
+		used.opaqueExpr(f.TSType)
 		return "o[\"" + wn + "\"] as " + f.TSType
 	}
 
 	if f.IsEnum {
+		used.helper("reqOneOf")
+		used.enumUse(f.GoTypeName)
 		return "reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\")"
 	}
 	if f.IsStruct {
 		return r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"])"
-	}
-	if f.IsSlice {
-		return "decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + wn + "\")"
-	}
-	if f.IsMap {
-		return "decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + wn + "\")"
 	}
 
 	// Unresolved type (e.g. an unregistered nested struct) — pass through as
@@ -332,14 +401,23 @@ func (r *Registry) reqExpr(f *fieldInfo, path string) string {
 	}
 
 	// Primitive
-	return primHelperAST(f.TSType, false) + "(o, \"" + wn + "\", \"" + path + "\")"
+	helper := primHelperAST(f.TSType, false)
+	used.helper(helper)
+	return helper + "(o, \"" + wn + "\", \"" + path + "\")"
 }
 
-func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path string) {
+func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path string, used *usedIdents) {
 	wn := tsStringLiteral(f.WireName)
+	// A present-null field decodes as absent in every branch below except the
+	// raw/interface/unknown pass-throughs, where null is data. encoding/json
+	// marshals a nil pointer/slice/map to null, and the library's
+	// optional-only model (nullable-vs-optional is a documented non-goal)
+	// maps null and a missing key to the same TS undefined.
+	guard := "o[\"" + wn + "\"] !== undefined && o[\"" + wn + "\"] !== null"
 	if f.JSONString {
+		used.helper("optStr")
 		varName := localVarName(f.WireName)
-		w.WriteString("  const " + varName + " = optStr(o, \"" + wn + "\", \"" + path + "\");\n")
+		w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : optStr(o, \"" + wn + "\", \"" + path + "\");\n")
 		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 		return
 	}
@@ -347,30 +425,37 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as unknown;\n")
 		return
 	}
+	// Collections before the mapping checks — see reqExpr.
+	if f.IsSlice {
+		used.helper("decodeArray")
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
+		return
+	}
+	if f.IsMap {
+		used.helper("decodeRecord")
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
+		return
+	}
 	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
+		used.opaqueExpr(expr)
 		varName := localVarName(f.WireName)
-		w.WriteString("  const " + varName + " = " + expr + "(o, \"" + wn + "\", \"" + path + "\");\n")
+		w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : " + expr + "(o, \"" + wn + "\", \"" + path + "\");\n")
 		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 		return
 	}
 	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as " + f.TSType + ";\n")
+		used.opaqueExpr(f.TSType)
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as " + f.TSType + ";\n")
 		return
 	}
 	if f.IsEnum {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\");\n")
+		used.helper("reqOneOf")
+		used.enumUse(f.GoTypeName)
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\");\n")
 		return
 	}
 	if f.IsStruct {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = " + r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"]);\n")
-		return
-	}
-	if f.IsSlice {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f) + ", \"" + path + "." + wn + "\");\n")
-		return
-	}
-	if f.IsMap {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f) + ", \"" + path + "." + wn + "\");\n")
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = " + r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"]);\n")
 		return
 	}
 
@@ -382,21 +467,30 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 
 	// Primitive optional
 	helper := primHelperAST(f.TSType, true)
+	used.helper(helper)
 	varName := localVarName(f.WireName)
-	w.WriteString("  const " + varName + " = " + helper + "(o, \"" + wn + "\", \"" + path + "\");\n")
+	w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : " + helper + "(o, \"" + wn + "\", \"" + path + "\");\n")
 	w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 }
 
-func (r *Registry) elemDecoderExpr(f *fieldInfo) string {
+// elemDecoderExpr returns the per-element decoder expression for a slice
+// element or map value. wn and path are the owning field's wire name and
+// type-level path: a DecoderMappings element decoder keeps its
+// (obj, key, path) contract by being called through a synthesized single-key
+// object carrying the real wire name, so its error messages locate the actual
+// field (decodeArray/decodeRecord prefix the element index/key themselves).
+func (r *Registry) elemDecoderExpr(f *fieldInfo, wn, path string, used *usedIdents) string {
 	elemType := f.SliceElem
 	goTypeName := f.GoTypeName
 
 	// Check DecoderMappings
 	if expr, ok := r.DecoderMappings[goTypeName]; ok {
-		return "(v) => " + expr + "({v} as Record<string, unknown>, \"v\", \"elem\")"
+		used.opaqueExpr(expr)
+		return "(v) => " + expr + "({\"" + wn + "\": v} as Record<string, unknown>, \"" + wn + "\", \"" + path + "\")"
 	}
 	// Check TypeMappings
 	if mapped, ok := r.TypeMappings[goTypeName]; ok {
+		used.opaqueExpr(mapped)
 		return "(v) => v as " + mapped
 	}
 	// Check if elem is a registered struct
@@ -406,6 +500,8 @@ func (r *Registry) elemDecoderExpr(f *fieldInfo) string {
 	// Check if elem is an enum (use GoTypeName which is the Go type name)
 	if _, ok := r.Enums[goTypeName]; ok {
 		constName := r.enumConstName(goTypeName)
+		used.enumUse(goTypeName)
+		used.typeRef(r.tsEnumName(goTypeName))
 		return "(v) => { const s = v as string; if (!" + constName + ".includes(s as never)) throw new TypeError(\"invalid enum value: \" + s); return s as " + r.tsEnumName(goTypeName) + "; }"
 	}
 
@@ -421,11 +517,11 @@ func (r *Registry) elemDecoderExpr(f *fieldInfo) string {
 	return tsIdentityCast
 }
 
-func (r *Registry) mapValDecoderExpr(f *fieldInfo) string {
+func (r *Registry) mapValDecoderExpr(f *fieldInfo, wn, path string, used *usedIdents) string {
 	return r.elemDecoderExpr(&fieldInfo{
 		SliceElem:  f.MapVal,
 		GoTypeName: f.GoTypeName,
-	})
+	}, wn, path, used)
 }
 
 func primHelperAST(tsType string, optional bool) string {
@@ -490,14 +586,13 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 
 // --- constants generation ---
 
+// generateConstants writes the constants file. Callers (Generate,
+// GenerateConstants) have already rejected constants whose TSName sanitizes
+// to an empty identifier via validateConstants.
 func (r *Registry) generateConstants(w *strings.Builder) {
 	w.WriteString(r.HeaderComment)
 	for _, c := range r.Constants {
-		name := sanitizeTSIdent(c.TSName)
-		if name == "" {
-			continue
-		}
-		fmt.Fprintf(w, "export const %s = %d;\n", name, c.Value)
+		fmt.Fprintf(w, "export const %s = %d;\n", sanitizeTSIdent(c.TSName), c.Value)
 	}
 }
 

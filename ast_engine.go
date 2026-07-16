@@ -36,6 +36,7 @@ type fieldInfo struct {
 	Optional   bool
 	JSONString bool
 	Tagged     bool // wire name came from an explicit json tag
+	IsBytes    bool // []byte field: marshals as base64 string, nil marshals as null
 	IsSlice    bool
 	IsMap      bool
 	IsStruct   bool
@@ -536,9 +537,11 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 // otherwise the element type is resolved and suffixed with "[]".
 func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
 	elem := ut.Elem()
-	// []byte → string
+	// []byte → string (base64). IsBytes marks it for the emitter: unlike a
+	// real Go string, a nil non-omitempty []byte marshals to null.
 	if b, ok := elem.(*types.Basic); ok && b.Kind() == types.Byte {
 		fi.TSType = tsString
+		fi.IsBytes = true
 		return *fi
 	}
 	fi.IsSlice = true

@@ -102,3 +102,9 @@ type WithEmbedding struct {
 	Base
 	Name string `json:"name"`
 }
+
+// HasMappedSlice has a slice whose element type carries a custom mapping.
+type HasMappedSlice struct {
+	IDs  []CustomID `json:"ids"`
+	Name string     `json:"name"`
+}

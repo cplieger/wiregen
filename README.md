@@ -84,7 +84,7 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 | `WithSelfContainedRegistry(v bool)`                          | Use a self-contained Map-based registry instead of importing from BusImport.             |
 | `WithFilenames(types, decoders, registry, constants string)` | Override output filenames (pass `""` to keep defaults).                                  |
 | `WithClientFilename(v string)`                               | Override the generated client filename (default: `"client.gen.ts"`).                     |
-| `WithValidatorsFile(v string)`                               | Make `Generate` also write the library-owned validators module at this path relative to `outDir` (may point outside it, e.g. `"../validators.ts"`). Empty = not written. |
+| `WithValidatorsFile(v string)`                               | Write the library-owned validators module at this outDir-relative path on every run.     |
 
 ### Registry fields (payload data)
 

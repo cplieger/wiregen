@@ -130,23 +130,26 @@ func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
 // const array they reference is found by scanning those (small) expressions —
 // never the generated body.
 type usedIdents struct {
-	helpers map[string]bool // validators-contract helpers called
-	types   map[string]bool // TS type / enum-type names referenced
-	enums   map[string]bool // Go enum names whose const value array is referenced
-	opaque  []string        // consumer-supplied mapping expressions emitted verbatim
+	helpers  map[string]bool // validators-contract helpers called
+	types    map[string]bool // TS type / enum-type names referenced
+	enums    map[string]bool // Go enum names whose const value array is referenced
+	decoders map[string]bool // generated decoder functions referenced (client emission)
+	opaque   []string        // consumer-supplied mapping expressions emitted verbatim
 }
 
 func newUsedIdents() *usedIdents {
 	return &usedIdents{
-		helpers: map[string]bool{},
-		types:   map[string]bool{},
-		enums:   map[string]bool{},
+		helpers:  map[string]bool{},
+		types:    map[string]bool{},
+		enums:    map[string]bool{},
+		decoders: map[string]bool{},
 	}
 }
 
-func (u *usedIdents) helper(name string)    { u.helpers[name] = true }
-func (u *usedIdents) typeRef(tsName string) { u.types[tsName] = true }
-func (u *usedIdents) enumUse(goName string) { u.enums[goName] = true }
+func (u *usedIdents) helper(name string)     { u.helpers[name] = true }
+func (u *usedIdents) typeRef(tsName string)  { u.types[tsName] = true }
+func (u *usedIdents) enumUse(goName string)  { u.enums[goName] = true }
+func (u *usedIdents) decoderRef(name string) { u.decoders[name] = true }
 func (u *usedIdents) opaqueExpr(expr string) {
 	u.opaque = append(u.opaque, expr)
 }
@@ -162,10 +165,9 @@ func (u *usedIdents) opaqueRefs(ident string) bool {
 	return false
 }
 
+// generateDecoders writes the decoders file. Callers (Generate,
+// GenerateDecoders) have already rejected a missing ValidatorsImport.
 func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
-	if r.ValidatorsImport == "" {
-		panic("wiregen: ValidatorsImport must be set")
-	}
 	body, used := r.decoderBodies(engine)
 
 	w.WriteString(r.HeaderComment)
@@ -339,6 +341,25 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *used
 	w.WriteString("    default: throw new TypeError(`unknown " + tn + " variant: ${" + disc + "}`);\n")
 	w.WriteString("  }\n")
 	w.WriteString("};\n\n")
+
+	r.emitUnionPayloadAdapter(w, ti, tn, used)
+}
+
+// emitUnionPayloadAdapter writes the 1-argument companion of a union's
+// 2-argument decoder: a plain Decoder<X> that reads the configured
+// discriminator key off the payload object itself and dispatches. This is the
+// form the SSE registry (and any other Decoder<T>-shaped consumer) can bind —
+// the 2-argument decoder cannot enter the registry, which was the gap that
+// blocked registering a //wiregen:union type in SSEEvents.
+func (r *Registry) emitUnionPayloadAdapter(w *strings.Builder, ti *typeInfo, tn string, used *usedIdents) {
+	path := "$." + r.pathName(tn)
+	key := tsStringLiteral(ti.Union.Discriminator)
+	used.helper("asObject")
+	used.helper("reqStr")
+	w.WriteString("export const " + r.unionPayloadDecoderName(ti.Name) + ": Decoder<" + tn + "> = (v) => {\n")
+	w.WriteString("  const o = asObject(v, \"" + path + "\");\n")
+	w.WriteString("  return " + r.decoderName(ti.Name) + "(reqStr(o, \"" + key + "\", \"" + path + "\"), o);\n")
+	w.WriteString("};\n\n")
 }
 
 func (r *Registry) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
@@ -367,11 +388,11 @@ func (r *Registry) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
 	// encoding/json's own nil-value output would be a fidelity bug.
 	if f.IsSlice {
 		used.helper("decodeArray")
-		return "o[\"" + wn + "\"] === null ? [] : decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\")"
+		return "o[\"" + wn + "\"] === null ? [] : decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
 	}
 	if f.IsMap {
 		used.helper("decodeRecord")
-		return "o[\"" + wn + "\"] === null ? {} : decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\")"
+		return "o[\"" + wn + "\"] === null ? {} : decodeRecord(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
 	}
 
 	// Custom decoder mapping (scalar field of a mapped type)
@@ -428,12 +449,12 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 	// Collections before the mapping checks — see reqExpr.
 	if f.IsSlice {
 		used.helper("decodeArray")
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
 		return
 	}
 	if f.IsMap {
 		used.helper("decodeRecord")
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.mapValDecoderExpr(f, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
+		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
 		return
 	}
 	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
@@ -473,39 +494,58 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 	w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
 }
 
-// elemDecoderExpr returns the per-element decoder expression for a slice
-// element or map value. wn and path are the owning field's wire name and
-// type-level path: a DecoderMappings element decoder keeps its
+// elemDecoderExpr returns the per-element decoder expression for the slice
+// element or map value described by elem. wn and path are the owning field's
+// wire name and type-level path: a DecoderMappings element decoder keeps its
 // (obj, key, path) contract by being called through a synthesized single-key
 // object carrying the real wire name, so its error messages locate the actual
 // field (decodeArray/decodeRecord prefix the element index/key themselves).
-func (r *Registry) elemDecoderExpr(f *fieldInfo, wn, path string, used *usedIdents) string {
-	elemType := f.SliceElem
-	goTypeName := f.GoTypeName
+//
+// A collection element recurses BEFORE the mapping checks (the same routing
+// rule as reqExpr — GoTypeName carries the LEAF element's mapping key, so a
+// mapped leaf inside a nested collection applies at its own level, never to
+// the collection value). Each nested level accepts null as its empty value
+// (encoding/json marshals a nil slice/map to null) and validates its own
+// elements, so [][]T and map[string][]T decode with real per-level checks
+// instead of an identity cast.
+func (r *Registry) elemDecoderExpr(elem *fieldInfo, wn, path string, used *usedIdents) string {
+	if elem.IsSlice {
+		used.helper("decodeArray")
+		return "(v) => v === null ? [] : decodeArray(v, " + r.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+	}
+	if elem.IsMap {
+		used.helper("decodeRecord")
+		return "(v) => v === null ? {} : decodeRecord(v, " + r.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+	}
 
 	// Check DecoderMappings
-	if expr, ok := r.DecoderMappings[goTypeName]; ok {
+	if expr, ok := r.DecoderMappings[elem.GoTypeName]; ok {
 		used.opaqueExpr(expr)
 		return "(v) => " + expr + "({\"" + wn + "\": v} as Record<string, unknown>, \"" + wn + "\", \"" + path + "\")"
 	}
 	// Check TypeMappings
-	if mapped, ok := r.TypeMappings[goTypeName]; ok {
+	if mapped, ok := r.TypeMappings[elem.GoTypeName]; ok {
 		used.opaqueExpr(mapped)
 		return "(v) => v as " + mapped
 	}
 	// Check if elem is a registered struct
-	if r.typeNames[goTypeName] {
-		return r.decoderName(goTypeName)
+	if r.typeNames[elem.GoTypeName] {
+		return r.decoderName(elem.GoTypeName)
 	}
 	// Check if elem is an enum (use GoTypeName which is the Go type name)
-	if _, ok := r.Enums[goTypeName]; ok {
-		constName := r.enumConstName(goTypeName)
-		used.enumUse(goTypeName)
-		used.typeRef(r.tsEnumName(goTypeName))
-		return "(v) => { const s = v as string; if (!" + constName + ".includes(s as never)) throw new TypeError(\"invalid enum value: \" + s); return s as " + r.tsEnumName(goTypeName) + "; }"
+	if _, ok := r.Enums[elem.GoTypeName]; ok {
+		constName := r.enumConstName(elem.GoTypeName)
+		used.enumUse(elem.GoTypeName)
+		used.typeRef(r.tsEnumName(elem.GoTypeName))
+		return "(v) => { const s = v as string; if (!" + constName + ".includes(s as never)) throw new TypeError(\"invalid enum value: \" + s); return s as " + r.tsEnumName(elem.GoTypeName) + "; }"
+	}
+	// []byte element: a base64 string on the wire, and a nil element
+	// marshals to null — accept null as the empty string (null-as-zero).
+	if elem.IsBytes {
+		return "(v) => { if (v === null) return \"\"; if (typeof v !== \"string\") throw new TypeError(\"expected string\"); return v; }"
 	}
 
-	switch elemType {
+	switch elem.TSType {
 	case tsString:
 		return "(v) => { if (typeof v !== \"string\") throw new TypeError(\"expected string\"); return v as string; }"
 	case tsNumber:
@@ -515,13 +555,6 @@ func (r *Registry) elemDecoderExpr(f *fieldInfo, wn, path string, used *usedIden
 	}
 
 	return tsIdentityCast
-}
-
-func (r *Registry) mapValDecoderExpr(f *fieldInfo, wn, path string, used *usedIdents) string {
-	return r.elemDecoderExpr(&fieldInfo{
-		SliceElem:  f.MapVal,
-		GoTypeName: f.GoTypeName,
-	}, wn, path, used)
 }
 
 func primHelperAST(tsType string, optional bool) string {
@@ -541,19 +574,16 @@ func primHelperAST(tsType string, optional bool) string {
 
 // --- registry generation ---
 
+// generateRegistry writes the registry file. Callers (Generate,
+// GenerateRegistry) have already rejected a missing BusImport /
+// ValidatorsImport for the selected registry mode.
 func (r *Registry) generateRegistry(w *strings.Builder) {
-	if !r.SelfContainedRegistry && r.BusImport == "" {
-		panic("wiregen: BusImport must be set when SelfContainedRegistry is false")
-	}
-	if r.SelfContainedRegistry && r.ValidatorsImport == "" {
-		panic("wiregen: ValidatorsImport must be set when SelfContainedRegistry is true")
-	}
 	w.WriteString(r.HeaderComment)
 
 	decoderImports := make([]string, 0)
 	seen := map[string]bool{}
 	for _, e := range r.SSEEvents {
-		dn := r.decoderName(e.TypeName)
+		dn := r.sseDecoderName(e.TypeName)
 		if !seen[dn] {
 			seen[dn] = true
 			decoderImports = append(decoderImports, dn)
@@ -567,7 +597,7 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 		w.WriteString("const registry = new Map<string, Decoder<unknown>>();\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
 		for _, e := range r.SSEEvents {
-			w.WriteString("  registry.set(\"" + tsStringLiteral(e.EventType) + "\", " + r.decoderName(e.TypeName) + " as Decoder<unknown>);\n")
+			w.WriteString("  registry.set(\"" + tsStringLiteral(e.EventType) + "\", " + r.sseDecoderName(e.TypeName) + " as Decoder<unknown>);\n")
 		}
 		w.WriteString("}\n\n")
 		w.WriteString("export function getSSEDecoder(eventType: string): Decoder<unknown> | undefined {\n")
@@ -578,7 +608,7 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
 		for _, e := range r.SSEEvents {
-			w.WriteString("  " + r.RegisterFuncName + "(\"" + tsStringLiteral(e.EventType) + "\", " + r.decoderName(e.TypeName) + ");\n")
+			w.WriteString("  " + r.RegisterFuncName + "(\"" + tsStringLiteral(e.EventType) + "\", " + r.sseDecoderName(e.TypeName) + ");\n")
 		}
 		w.WriteString("}\n")
 	}
@@ -596,44 +626,30 @@ func (r *Registry) generateConstants(w *strings.Builder) {
 	}
 }
 
-// --- validators starter generation (opt-in) ---
+// --- validators module generation (library-owned) ---
 
-// validatorsStarterBanner heads the opt-in validators starter module. It is
-// deliberately NOT r.HeaderComment: this file is a one-time scaffold a new
-// consumer copies once and then OWNS — it is never regenerated and must never
-// carry a "DO NOT EDIT" / "CODE-GENERATED" banner, or a consumer's hand-edited
-// copy would look machine-managed.
-const validatorsStarterBanner = `// wiregen validators starter — copy this file ONCE into your consumer, then
-// OWN it: edit it freely. It is a scaffold, NOT a generated artifact, and
-// wiregen will never regenerate or overwrite it.
-//
-// Runtime decode helpers — the primitives the generated decoders in
-// ./wire/decoders.gen.ts (and any hand-rolled decoder) import by name. The
-// wire-format decoders themselves ARE generated from your Go structs at build
-// time (see your cmd/wire-codegen driver); edit the Go side and re-run the
-// generator to update them. This validators module is the only hand-authored
-// part of the wire validation system — keep the exported names and signatures
-// below stable so the generated decoders keep compiling against it.
-
-`
-
-// generateValidators writes the opt-in validators starter module: the full
-// set of 11 runtime helper functions plus the Decoder<T> type alias that the
+// generateValidators writes the library-owned validators module: the full set
+// of 11 runtime helper functions plus the Decoder<T> type alias that the
 // generated decoders import. The content is constant (it does not depend on
-// the registered types) — it is the reference implementation of the
-// "Validators contract". A consumer calls GenerateValidators() once to scaffold
-// their own copy, then owns and edits it. It is never part of Generate's
-// default writes.
+// the registered types) — it is THE implementation of the "Validators
+// contract", carried under the same DO-NOT-EDIT banner as every other
+// generated file. Consumers regenerate it (via WithValidatorsFile or
+// GenerateValidators) instead of copying and owning it; the v1-era
+// copy-once-then-own starter posture is retired.
 func (r *Registry) generateValidators(w *strings.Builder) {
-	w.WriteString(validatorsStarterBanner)
-	w.WriteString(validatorsStarterBody)
+	hc := r.HeaderComment
+	if hc == "" {
+		hc = defaultHeaderComment
+	}
+	w.WriteString(hc)
+	w.WriteString(validatorsBody)
 }
 
-// validatorsStarterBody is the working TypeScript implementation of the
-// validators contract: asObject, asArray, reqStr/reqNum/reqBool,
-// optStr/optNum/optBool, reqOneOf, decodeArray, decodeRecord (11 functions)
-// plus `export type Decoder<T> = (v: unknown) => T`.
-const validatorsStarterBody = `/** A decoder is a pure function that returns T or throws on shape mismatch. */
+// validatorsBody is the working TypeScript implementation of the validators
+// contract: asObject, asArray, reqStr/reqNum/reqBool, optStr/optNum/optBool,
+// reqOneOf, decodeArray, decodeRecord (11 functions) plus
+// `export type Decoder<T> = (v: unknown) => T`.
+const validatorsBody = `/** A decoder is a pure function that returns T or throws on shape mismatch. */
 export type Decoder<T> = (v: unknown) => T;
 
 function fail(path: string, msg: string): never {

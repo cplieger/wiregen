@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen"
-	"github.com/cplieger/wiregen/testdata/basic"
-	"github.com/cplieger/wiregen/testdata/edges"
+	"github.com/cplieger/wiregen/v2"
+	"github.com/cplieger/wiregen/v2/testdata/basic"
+	"github.com/cplieger/wiregen/v2/testdata/edges"
 )
 
 // Tests for decoder emission: the primitive validators chosen per field, the
@@ -15,7 +15,7 @@ import (
 
 func TestAllKindsDecoders(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.AllKinds]())
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, "reqBool(o, \"bool\"") {
 		t.Errorf("missing reqBool, got:\n%s", dec)
 	}
@@ -29,7 +29,7 @@ func TestAllKindsDecoders(t *testing.T) {
 
 func TestAllOptionalFieldsDecoder(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.AllOptional]())
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, "const out: AllOptional = {") {
 		t.Errorf("expected empty required block, got:\n%s", dec)
 	}
@@ -37,7 +37,7 @@ func TestAllOptionalFieldsDecoder(t *testing.T) {
 
 func TestEmptyStructDecoder(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.EmptyStruct]())
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, "decodeEmptyStruct") {
 		t.Errorf("empty struct should still get a decoder, got:\n%s", dec)
 	}
@@ -49,7 +49,7 @@ func TestEmptyStructDecoder(t *testing.T) {
 func TestPathNameOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.Inner]())
 	r.PathNameOverride = map[string]string{"Inner": "custom_path"}
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, "$.custom_path") {
 		t.Errorf("expected custom path, got:\n%s", dec)
 	}
@@ -60,9 +60,9 @@ func TestNoEmptyTypeImport(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasBytes]()}
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	// HasBytes references no other registered type, so type imports are empty —
 	// the import block must be omitted, not emitted as `import type {}`.
 	if strings.Contains(dec, "import type {  }") || strings.Contains(dec, "import type {}") {
@@ -76,7 +76,7 @@ func TestNoEmptyTypeImport(t *testing.T) {
 func TestDecoders_OptionalEnumUsesReqOneOf(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasOptEnum]())
 	r.Enums = map[string]wiregen.EnumDef{"MyEnum": {Values: []string{"a", "b"}}}
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, `if (o["status"] !== undefined && o["status"] !== null) out.status = reqOneOf(o, "status", MY_ENUMS,`) {
 		t.Errorf("optional enum field should decode with guarded reqOneOf, got:\n%s", dec)
 	}
@@ -87,7 +87,7 @@ func TestDecoders_OptionalEnumUsesReqOneOf(t *testing.T) {
 // into the optional path, decoding via optStr and never decodeArray.
 func TestDecoders_OptionalByteSliceUsesOptStr(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.OptionalByteSlice]())
-	dec := r.GenerateDecoders()
+	dec := mustGen(t, r.GenerateDecoders)
 	if !strings.Contains(dec, `const data = o["data"] === null ? undefined : optStr(o, "data",`) {
 		t.Errorf("optional *[]byte should decode with optStr, got:\n%s", dec)
 	}
@@ -128,14 +128,14 @@ func TestDecoders_UncoveredEmitBranches(t *testing.T) {
 			wants: []string{`decodeRecord(o["scores"], (v) => { if (typeof v !== "number") throw new TypeError("expected number"); return v as number; }, "$.map_of_ptrs.scores")`},
 		},
 		{
-			name:  "nested collection element falls back to identity cast",
+			name:  "nested collection element recurses with per-level validation",
 			types: []wiregen.WireType{wiregen.TypeRef[edges.SliceOfSlice]()},
-			wants: []string{`decodeArray(o["matrix"], (v) => v as unknown, "$.slice_of_slice.matrix")`},
+			wants: []string{`decodeArray(o["matrix"], (v) => v === null ? [] : decodeArray(v, (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.slice_of_slice.matrix"), "$.slice_of_slice.matrix")`},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dec := edgesReg(tc.types...).GenerateDecoders()
+			dec := mustGen(t, edgesReg(tc.types...).GenerateDecoders)
 			for _, want := range tc.wants {
 				if !strings.Contains(dec, want) {
 					t.Errorf("decoder missing %q\n--- output ---\n%s", want, dec)
@@ -152,14 +152,14 @@ func TestDecoders_UncoveredEmitBranches(t *testing.T) {
 // pass-throughs keep null as data. Nullable-vs-optional is a documented
 // non-goal: null and absent collapse to the same TS undefined.
 func TestDecoders_NullHandling(t *testing.T) {
-	dec := edgesReg(wiregen.TypeRef[edges.AllKinds]()).GenerateDecoders()
+	dec := mustGen(t, edgesReg(wiregen.TypeRef[edges.AllKinds]()).GenerateDecoders)
 	wants := []string{
 		// required slice: null -> empty array
 		`slice: o["slice"] === null ? [] : decodeArray(o["slice"],`,
 		// required []byte (base64 string on the wire; nil marshals null): null -> ""
 		`bytes: o["bytes"] === null ? "" : reqStr(o, "bytes", "$.all_kinds"),`,
-		// map fields are forced optional; present-null is skipped by the guard
-		`if (o["map"] !== undefined && o["map"] !== null) out.map = decodeRecord(o["map"],`,
+		// required map (no omitempty — maps keep source optionality): null -> {}
+		`map: o["map"] === null ? {} : decodeRecord(o["map"],`,
 		// required raw/interface pass-throughs keep null as data (bare cast)
 		`raw: o["raw"] as unknown,`,
 		`iface: o["iface"] as unknown,`,
@@ -170,12 +170,12 @@ func TestDecoders_NullHandling(t *testing.T) {
 		}
 	}
 
-	dec = edgesReg(wiregen.TypeRef[edges.NestedOptPtr](), wiregen.TypeRef[edges.Inner]()).GenerateDecoders()
+	dec = mustGen(t, edgesReg(wiregen.TypeRef[edges.NestedOptPtr](), wiregen.TypeRef[edges.Inner]()).GenerateDecoders)
 	if want := `if (o["inner"] !== undefined && o["inner"] !== null) out.inner = decodeInner(o["inner"]);`; !strings.Contains(dec, want) {
 		t.Errorf("optional struct decoder missing null-skipping guard %q\n--- output ---\n%s", want, dec)
 	}
 
-	dec = edgesReg(wiregen.TypeRef[edges.AllOptional]()).GenerateDecoders()
+	dec = mustGen(t, edgesReg(wiregen.TypeRef[edges.AllOptional]()).GenerateDecoders)
 	if want := `const a = o["a"] === null ? undefined : optStr(o, "a", "$.all_optional");`; !strings.Contains(dec, want) {
 		t.Errorf("optional primitive decoder missing null ternary %q\n--- output ---\n%s", want, dec)
 	}

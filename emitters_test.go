@@ -17,7 +17,7 @@ func TestGenerateTypes_enumSortOrder(t *testing.T) {
 		"AaaEnum": {Values: []string{"a"}},
 		"ZzzEnum": {Values: []string{"z"}},
 	}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 
 	ai := strings.Index(out, "export type AaaEnum")
 	zi := strings.Index(out, "export type ZzzEnum")
@@ -40,7 +40,7 @@ func TestGenerateTypes_unionDocEmitted(t *testing.T) {
 		{PkgPath: unionsPkg, Name: "ScanEvent"},
 		{PkgPath: unionsPkg, Name: "EventData"},
 	}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 
 	mustContain(t, "union-doc", out,
 		"export type EventData = CoverageEvent | NotifyEvent | ScanEvent;")
@@ -53,7 +53,7 @@ func TestGenerateTypes_unionDocEmitted(t *testing.T) {
 // the output ends with a single trailing blank line after the import.
 func TestGenerateDecoders_emptyRegistryImports(t *testing.T) {
 	r := &Registry{ValidatorsImport: "./v.js"}
-	out := r.GenerateDecoders()
+	out := mustGen(t, r.GenerateDecoders)
 
 	mustContain(t, "helpers-import", out, `import { type Decoder } from "./v.js";`)
 	mustNotContain(t, "types-import", out, "import type {")
@@ -72,7 +72,7 @@ func TestEmitDecoder_structLiteralShape(t *testing.T) {
 		{PkgPath: edgesPkg, Name: "EmptyStruct"},
 		{PkgPath: edgesPkg, Name: "AllOptional"},
 	}
-	out := r.GenerateDecoders()
+	out := mustGen(t, r.GenerateDecoders)
 
 	mustContain(t, "empty-struct", out, "const out: EmptyStruct = {};")
 	mustContain(t, "all-optional", out, "const out: AllOptional = {\n  };")
@@ -84,7 +84,7 @@ func TestEmitDecoder_structLiteralShape(t *testing.T) {
 func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
 	r := &Registry{}
 	r.Enums = map[string]EnumDef{"Phantom": {}}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	mustContain(t, "never-enum", out, "export type Phantom = never;")
 	mustNotContain(t, "never-enum", out, "export type Phantom = ;")
 }

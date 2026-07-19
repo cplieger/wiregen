@@ -12,10 +12,10 @@ import (
 // --- shared internal test helpers ---
 
 const (
-	basicPkg    = "github.com/cplieger/wiregen/testdata/basic"
-	edgesPkg    = "github.com/cplieger/wiregen/testdata/edges"
-	unionsPkg   = "github.com/cplieger/wiregen/testdata/unions"
-	crossrefPkg = "github.com/cplieger/wiregen/testdata/crossref"
+	basicPkg    = "github.com/cplieger/wiregen/v2/testdata/basic"
+	edgesPkg    = "github.com/cplieger/wiregen/v2/testdata/edges"
+	unionsPkg   = "github.com/cplieger/wiregen/v2/testdata/unions"
+	crossrefPkg = "github.com/cplieger/wiregen/v2/testdata/crossref"
 )
 
 func eqStr(t *testing.T, fn, in, got, want string) {

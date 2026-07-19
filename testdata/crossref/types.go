@@ -3,7 +3,7 @@
 // unresolved-type fallback — the regressions fixed alongside these tests.
 package crossref
 
-import "github.com/cplieger/wiregen/testdata/crossref/dep"
+import "github.com/cplieger/wiregen/v2/testdata/crossref/dep"
 
 // _ forces dep into the loaded package graph as a transitive dependency, so
 // the enum-discovery scoping test has a same-named (dep.Color) type to ignore.

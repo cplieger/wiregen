@@ -28,9 +28,9 @@ export const decodeHasBytes: Decoder<HasBytes> = (v) => {
 export const decodeHasMap: Decoder<HasMap> = (v) => {
   const o = asObject(v, "$.has_map");
   const out: HasMap = {
+    meta: o["meta"] === null ? {} : decodeRecord(o["meta"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.has_map.meta"),
     name: reqStr(o, "name", "$.has_map"),
   };
-  if (o["meta"] !== undefined && o["meta"] !== null) out.meta = decodeRecord(o["meta"], (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.has_map.meta");
   return out;
 };
 

@@ -26,12 +26,15 @@ type typeInfo struct {
 
 // fieldInfo holds one struct field's metadata.
 type fieldInfo struct {
+	// Elem is the resolved element descriptor of a slice's element or a
+	// map's value (nil otherwise). It is the full recursive fieldInfo, so
+	// nested collections ([][]T, map[string][]T, …) decode with real
+	// per-level validation instead of an identity cast.
+	Elem       *fieldInfo
 	WireName   string
 	TSType     string
 	Doc        string // JSDoc for the field
 	GoTypeName string // for cross-ref resolution
-	SliceElem  string
-	MapVal     string
 	Depth      int
 	Optional   bool
 	JSONString bool
@@ -547,7 +550,7 @@ func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
 	fi.IsSlice = true
 	elemFI := e.resolveFieldType(elem, "", false, false, 0)
 	fi.TSType = elemFI.TSType + "[]"
-	fi.SliceElem = elemFI.TSType
+	fi.Elem = &elemFI
 	// elemFI.GoTypeName is already keyed correctly: the short Go name for a
 	// registered struct/enum (matches r.typeNames / r.Enums) or the full
 	// importpath.Type for a mapped type (matches Type/DecoderMappings).
@@ -557,15 +560,15 @@ func (e *astEngine) resolveSliceType(ut *types.Slice, fi *fieldInfo) fieldInfo {
 	return *fi
 }
 
-// resolveMapType resolves a map field into Record<string, V>. The field is
-// forced optional for ergonomics; a nil map marshals to null (it is omitted
-// only when the field carries omitempty).
+// resolveMapType resolves a map field into Record<string, V>. The field
+// keeps its source optionality (pointer / omitempty / omitzero), matching
+// encoding/json: a nil non-omitempty map marshals to null, which the decoder
+// accepts as the empty record — it is omitted only under omitempty.
 func (e *astEngine) resolveMapType(ut *types.Map, fi *fieldInfo) fieldInfo {
 	fi.IsMap = true
-	fi.Optional = true
 	valFI := e.resolveFieldType(ut.Elem(), "", false, false, 0)
 	fi.TSType = "Record<string, " + valFI.TSType + ">"
-	fi.MapVal = valFI.TSType
+	fi.Elem = &valFI
 	// See the slice case: use the element's resolved key, not typeKey(elem).
 	fi.GoTypeName = valFI.GoTypeName
 	return *fi

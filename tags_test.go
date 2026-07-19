@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen"
-	"github.com/cplieger/wiregen/testdata/edges"
+	"github.com/cplieger/wiregen/v2"
+	"github.com/cplieger/wiregen/v2/testdata/edges"
 )
 
 // Tests for json struct-tag semantics: the "-" skip, the "-," field-named-dash
@@ -14,7 +14,7 @@ import (
 
 func TestDashCommaExcludesHidden(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DashComma]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	// json:"-" excludes the field entirely (the json:"-," field named "-" is
 	// covered by the white-box resolveStructFields test).
 	if strings.Contains(out, "Hidden") || strings.Contains(out, "hidden") {
@@ -27,7 +27,7 @@ func TestDashCommaExcludesHidden(t *testing.T) {
 
 func TestTagVariants(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TagVariants]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	if !strings.Contains(out, "required: string;") {
 		t.Errorf("required field missing, got:\n%s", out)
 	}
@@ -44,7 +44,7 @@ func TestTagVariants(t *testing.T) {
 
 func TestTagEmptyWireName(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TagEmpty]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	// json:",omitempty" → wire name = "Value" (Go field name), optional.
 	if !strings.Contains(out, "Value?: string") {
 		t.Errorf("empty tag name should use Go field name 'Value', got:\n%s", out)
@@ -53,7 +53,7 @@ func TestTagEmptyWireName(t *testing.T) {
 
 func TestTagStringEncoding(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TagOnlyOptions]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	// json:",string" → wire name = "Count", type = string.
 	if !strings.Contains(out, "Count: string") {
 		t.Errorf("json:\",string\" should produce string type with Go name, got:\n%s", out)
@@ -62,7 +62,7 @@ func TestTagStringEncoding(t *testing.T) {
 
 func TestManyTagOptions(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.ManyOptions]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	// json:"a,omitempty,string" → optional + string type.
 	if !strings.Contains(out, "a?: string;") {
 		t.Errorf("multiple tag options should produce optional string, got:\n%s", out)
@@ -71,7 +71,7 @@ func TestManyTagOptions(t *testing.T) {
 
 func TestStructWithRawAndTime(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.StructWithRawAndTime]())
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	if !strings.Contains(out, "payload: unknown;") {
 		t.Errorf("json.RawMessage should be unknown, got:\n%s", out)
 	}

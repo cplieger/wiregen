@@ -1,6 +1,6 @@
 # wiregen
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen.svg)](https://pkg.go.dev/github.com/cplieger/wiregen)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen/v2.svg)](https://pkg.go.dev/github.com/cplieger/wiregen/v2)
 [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/wiregen)](https://github.com/cplieger/wiregen/blob/main/go.mod)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/coverage.json)](https://github.com/cplieger/wiregen/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/mutation.json)](https://github.com/cplieger/wiregen/issues?q=label%3Agremlins-tracker)
@@ -14,8 +14,10 @@ wiregen is a standalone Go library that, given a set of registered Go types and 
 ## Install
 
 ```
-go get github.com/cplieger/wiregen@latest
+go get github.com/cplieger/wiregen/v2@latest
 ```
+
+Upgrading from v1: the module path is now `…/wiregen/v2`, every per-file string generator returns `(string, error)` instead of panicking on config errors, non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
 
 ## Usage
 
@@ -24,7 +26,7 @@ Create a registry with `NewRegistry` (functional options configure behavior knob
 ```go
 package main
 
-import "github.com/cplieger/wiregen"
+import "github.com/cplieger/wiregen/v2"
 
 type Status string
 
@@ -74,12 +76,15 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | `WithValidatorsImport(v string)`                             | **Required.** Import path for the validators module.                                     |
 | `WithBusImport(v string)`                                    | **Required** (unless `WithSelfContainedRegistry(true)`). Import path for the bus module. |
+| `WithTransportImport(v string)`                              | **Required with `Endpoints`.** Transport-module import path for the client.              |
 | `WithTypesImportPath(v string)`                              | Import path for the types file used in decoders (default: `"./types.gen.js"`).           |
 | `WithHeaderComment(v string)`                                | Header comment prepended to every generated file.                                        |
 | `WithRegisterFuncName(v string)`                             | Function name imported from the bus module (default: `"registerSSEDecoder"`).            |
 | `WithRegistryFuncName(v string)`                             | Exported function name in the registry file (default: `"registerAllSSEDecoders"`).       |
 | `WithSelfContainedRegistry(v bool)`                          | Use a self-contained Map-based registry instead of importing from BusImport.             |
 | `WithFilenames(types, decoders, registry, constants string)` | Override output filenames (pass `""` to keep defaults).                                  |
+| `WithClientFilename(v string)`                               | Override the generated client filename (default: `"client.gen.ts"`).                     |
+| `WithValidatorsFile(v string)`                               | Make `Generate` also write the library-owned validators module at this path relative to `outDir` (may point outside it, e.g. `"../validators.ts"`). Empty = not written. |
 
 ### Registry fields (payload data)
 
@@ -98,17 +103,22 @@ Payload types are set via exported fields after construction:
 | `DiscriminatorMap` | `map[string]map[string]string` | Per-union discriminator→variant decoder mapping; emit a union decoder for a sealed-interface union (see below).                                                          |
 | `SSEEvents`        | `[]SSERegEntry`                | Maps SSE event type strings to registered struct names.                                                                                                                  |
 | `Constants`        | `[]WireConst`                  | Integer constants to emit into a constants file.                                                                                                                         |
+| `Endpoints`        | `[]Endpoint`                   | HTTP endpoint table; when non-empty, `Generate` also emits a typed client (`client.gen.ts`) and enables `GenerateGoPaths`. See "Endpoint table + generated client".      |
 
-Discriminated unions are declared in Go **source** with a directive on the sealed interface — `//wiregen:union discriminator=type variants=A,B,C` — which emits `export type X = A | B | C`. A runtime union decoder `(disc: string, v: unknown) => X` is emitted only when `DiscriminatorMap[X]` is set.
+Discriminated unions are declared in Go **source** with a directive on the sealed interface — `//wiregen:union discriminator=type variants=A,B,C` — which emits `export type X = A | B | C`. When `DiscriminatorMap[X]` is set, two runtime decoders are emitted: the 2-argument `decodeX(disc: string, v: unknown): X` (for callers that already extracted the discriminator, e.g. from an SSE event name) and the 1-argument payload adapter `decodeXPayload: Decoder<X>` (reads the discriminator key off the payload object itself). A union type can be registered in `SSEEvents`: the registry binds its payload adapter. Registering a union SSE event **without** a `DiscriminatorMap` entry fails `Generate` (there would be no runtime decoder to bind).
 
 ### Methods
 
-- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir` with per-file atomicity (every file is staged to a temp sibling first, so a staging failure — e.g. disk full — leaves the directory untouched, and each rename is atomic; the rename pass itself is sequential, so a rename failure can leave a mix of old and new files — it is not a multi-file transaction). Returns an error — it does **not** panic — when a required import is missing (`ValidatorsImport` empty, or, only when there are SSE events to register, `BusImport` empty while `SelfContainedRegistry` is false) or when a registered `WireConst`'s `TSName` sanitizes to an empty TS identifier. It writes nothing in that case. The config-validating string getters panic instead — `GenerateDecoders` on an empty `ValidatorsImport`, `GenerateRegistry` on an empty `BusImport` (with `SelfContainedRegistry` false) regardless of whether SSE events are present, and `GenerateConstants` on an unsanitizable `TSName`. Does **not** write `validators.ts` by default (see `GenerateValidators` below).
-- `(*Registry).GenerateTypes() string` — returns types file content. Panics on a package-load or type-resolution failure (the error `Generate` would return).
-- `(*Registry).GenerateDecoders() string` — returns decoders file content. Panics if `ValidatorsImport` is empty, or on a package-load or type-resolution failure.
-- `(*Registry).GenerateRegistry() string` — returns registry file content. Panics if `BusImport` is empty while `SelfContainedRegistry` is false, or if `SelfContainedRegistry` is true while `ValidatorsImport` is empty.
-- `(*Registry).GenerateConstants() string` — returns constants file content.
-- `(*Registry).GenerateValidators() string` — returns a starter `validators.ts` containing the full 11-function contract (`asObject`, `asArray`, `reqStr`, `reqNum`, `reqBool`, `optStr`, `optNum`, `optBool`, `reqOneOf<T>`, `decodeArray<T>`, `decodeRecord<T>`) plus the `Decoder<T>` type. The emitted file is consumer-editable (NOT stamped "DO NOT EDIT") — copy it once, then own it. **Opt-in only:** `Generate(outDir)` does not write `validators.ts`; consumers must explicitly call `GenerateValidators()` and write the result themselves.
+One error model across the whole surface: every generator returns an error on a config problem; nothing exported panics.
+
+- `(*Registry).Generate(outDir string) error` — writes all generated files to `outDir` with per-file atomicity (every file is staged to a temp sibling first, so a staging failure — e.g. disk full — leaves the directory untouched, and each rename is atomic; the rename pass itself is sequential, so a rename failure can leave a mix of old and new files — it is not a multi-file transaction). `client.gen.ts` is written only when `Endpoints` is non-empty; the validators module only when `WithValidatorsFile` is set. Returns an error and writes nothing when: a required import is missing (`ValidatorsImport` empty; `BusImport` empty while SSE events are registered and `SelfContainedRegistry` is false; `TransportImport` empty while endpoints are registered); a bare type name is registered twice (from the same or different packages — the engine keys types by bare name); two enums resolve to the same TS type name or const-array name; a registered `WireConst`'s `TSName` sanitizes to an empty TS identifier; the endpoint table is structurally invalid (unknown method/kind/shape, duplicate or post-case-conversion-colliding names, malformed placeholders, unregistered request/response types); or a `//wiregen:union` type is registered in `SSEEvents` without a `DiscriminatorMap` entry.
+- `(*Registry).GenerateTypes() (string, error)` — types file content.
+- `(*Registry).GenerateDecoders() (string, error)` — decoders file content. Errors if `ValidatorsImport` is empty.
+- `(*Registry).GenerateRegistry() (string, error)` — registry file content. Errors if `BusImport` is empty while `SelfContainedRegistry` is false, or if `SelfContainedRegistry` is true while `ValidatorsImport` is empty.
+- `(*Registry).GenerateConstants() (string, error)` — constants file content. Errors on an unsanitizable `TSName`.
+- `(*Registry).GenerateClient() (string, error)` — typed-client file content. Errors if `TransportImport` or `ValidatorsImport` is empty or the endpoint table is invalid.
+- `(*Registry).GenerateGoPaths(pkgName string) (string, error)` — a gofmt-formatted Go file of `Path*` constants (one per endpoint). Errors on an invalid endpoint table or package name.
+- `(*Registry).GenerateValidators() string` — the library-owned validators module: the full 11-function contract (`asObject`, `asArray`, `reqStr`, `reqNum`, `reqBool`, `optStr`, `optNum`, `optBool`, `reqOneOf<T>`, `decodeArray<T>`, `decodeRecord<T>`) plus the `Decoder<T>` type, under the same DO-NOT-EDIT banner as every other generated file. Content is constant (registry-independent), so this method alone cannot fail. Prefer `WithValidatorsFile` so `Generate` keeps the file current on every run; never hand-edit the output. (The v1 "copy once, then own it" starter posture is retired.)
 
 ### Types
 
@@ -141,9 +151,63 @@ type SSERegEntry struct {
 }
 ```
 
+## Endpoint table + generated client
+
+Registering `Endpoints` makes the HTTP contract data in the same registry as the
+types. `Generate` then also emits `client.gen.ts`: one `PATH_*` constant per
+endpoint (placeholders kept verbatim — non-JSON flows are consumed exclusively
+through these) and, per `KindJSON` endpoint, a typed function pair —
+`name(...): Promise<T | null>` and `nameRaw(...): Promise<ApiResult<T>>` —
+with the response decoder bound when a `Response` type is registered (an
+endpoint without one gets an OK-flag `Promise<boolean>` flavor instead).
+
+```go
+type Endpoint struct {
+    Name      string       // TS function name + PATH_/Go constant base
+    Method    string       // GET, POST, PUT, PATCH, DELETE
+    Path      string       // "/api/scan/series/{id}" — {name} segments become typed args
+    AuthGroup string       // opaque consumer tag for a routes-consistency check
+    Kind      EndpointKind // "" = KindJSON; KindRaw / KindSSE emit only a PATH_ constant
+    RespShape RespShape    // "" = RespObject; RespArray / RespRecord / RespStringArray
+    Doc       string       // optional JSDoc line
+    Request   WireType     // typed JSON request body (registered type)
+    Response  WireType     // decoded 2xx response body (registered type)
+    HasBody   bool         // untyped JSON body (body: unknown)
+    Query     bool         // trailing query?: Record<string, QueryValue> argument
+}
+```
+
+Validation happens before any file is written: unknown methods/kinds/shapes,
+duplicate names, names that collide after case conversion (`configYaml` vs
+`configYAML` would emit the same `PATH_CONFIG_YAML` / `PathConfigYAML`
+constant), malformed `{placeholder}` syntax, and request/response types that
+are not registered all fail `Generate` with a named error.
+
+`AuthGroup` is never interpreted by wiregen — it exists so the consumer can
+write a consistency test comparing the table against its server's actual route
+registrations (the server stays authoritative for permissions).
+
+**Client-transport contract.** The module at `TransportImport` must export:
+
+- `clientRequest<T>(method, path, body, decoder, signal?): Promise<T | null>`
+- `clientRequestOK(method, path, body?, signal?): Promise<boolean>`
+- `clientRequestRaw<T>(method, path, body?, decoder?, signal?): Promise<ApiResult<T>>`
+- `interface ApiResult<T>` (whatever envelope shape the consumer uses)
+
+**Go path constants.** `(*Registry).GenerateGoPaths(pkgName string) (string, error)`
+returns a gofmt-formatted Go source file declaring one `Path*` string constant
+per endpoint, so a CLI in the same binary shares the exact path table the TS
+client was generated from. Errors on an invalid endpoint table or package name
+(matching the other generators).
+
 ## Validators contract
 
-The consumer's validators module (at `ValidatorsImport`) must export:
+The validators module (at `ValidatorsImport`) is **library-owned generated
+output**: set `WithValidatorsFile` and `Generate` writes it on every run, or
+scaffold it once with `GenerateValidators()` — either way, don't hand-edit it.
+The contract below is what the generated decoders import by name; it is also a
+stable, hand-written-decoder-friendly API (consumer code may import and build
+on these helpers freely). The module exports:
 
 - `asObject(v: unknown, path: string): Record<string, unknown>`
 - `asArray(v: unknown, path: string): unknown[]`
@@ -166,6 +230,8 @@ The consumer's validators module (at `ValidatorsImport`) must export:
 - **`json.Number`** maps to `number`.
 - **`[]byte`** maps to `string` (JSON encodes `[]byte` as base64).
 - **`omitzero`** (Go 1.24+) is treated the same as `omitempty` — the field becomes optional.
+- **Map fields keep their source optionality** (pointer / `omitempty` / `omitzero` → optional, otherwise required), exactly like every other field kind. A required map's JSON `null` decodes to `{}` (below).
+- **Nested collection elements are validated recursively.** `[][]T`, `map[string][]T`, and deeper compositions decode with real per-level checks — each level accepts `null` as its empty value and validates its own elements; a malformed inner array/map throws with the element path.
 - **JSON `null` decodes as the zero value, not an error.** encoding/json marshals a nil pointer/slice/map (and a nil `[]byte`) to `null` when the field lacks `omitempty`; the generated decoders accept that output — an optional field decodes present-`null` as `undefined`, a required slice/map decodes `null` as empty (`[]`/`{}`), and a required `[]byte` decodes `null` as `""`. `json.RawMessage` and `interface{}` fields pass `null` through as data. There is no null-vs-absent distinction (nullable-vs-optional is a non-goal, below).
 - **`json:",string"`** causes the field to be typed as `string` and decoded with `reqStr`/`optStr`, matching `encoding/json`'s string-wrapping behavior for numbers and booleans.
 - **Map keys** are always `string` in generated TS because JSON object keys are strings regardless of the Go map key type.

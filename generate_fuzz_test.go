@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/wiregen"
-	"github.com/cplieger/wiregen/testdata/basic"
+	"github.com/cplieger/wiregen/v2"
+	"github.com/cplieger/wiregen/v2/testdata/basic"
 )
 
 func FuzzGenerate(f *testing.F) {
@@ -20,7 +20,7 @@ func FuzzGenerate(f *testing.F) {
 			wiregen.WithValidatorsImport(validatorsImport),
 			wiregen.WithBusImport(busImport),
 		)
-		r.PackagePaths = []string{"github.com/cplieger/wiregen/testdata/basic"}
+		r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
 		r.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.Address](),
 			wiregen.TypeRef[basic.User](),
@@ -41,13 +41,13 @@ func FuzzGenerate(f *testing.F) {
 		// crash-only target into one that asserts a real invariant.
 		dir := t.TempDir()
 		if err := r.Generate(dir); err != nil {
-			return // empty ValidatorsImport/BusImport: the getters would panic
+			return // empty ValidatorsImport/BusImport: the getters error the same way
 		}
 		files := []struct{ name, want string }{
-			{"types.gen.ts", r.GenerateTypes()},
-			{"decoders.gen.ts", r.GenerateDecoders()},
-			{"registry.gen.ts", r.GenerateRegistry()},
-			{"constants.gen.ts", r.GenerateConstants()},
+			{"types.gen.ts", mustGen(t, r.GenerateTypes)},
+			{"decoders.gen.ts", mustGen(t, r.GenerateDecoders)},
+			{"registry.gen.ts", mustGen(t, r.GenerateRegistry)},
+			{"constants.gen.ts", mustGen(t, r.GenerateConstants)},
 		}
 		for _, fc := range files {
 			got, err := os.ReadFile(filepath.Join(dir, fc.name))

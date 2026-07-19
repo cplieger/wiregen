@@ -47,7 +47,7 @@ func TestNewASTEngine_discoversEnumsWithoutRegisteredTypes(t *testing.T) {
 	r.PackagePaths = []string{crossrefPkg}
 	r.Enums = map[string]EnumDef{"Color": {}} // empty Values -> discover
 
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 	mustContain(t, "enum-discovery", out, `export type Color = "red" | "green" | "blue";`)
 	mustNotContain(t, "enum-discovery", out, "export type Color = ;")
 }
@@ -61,7 +61,7 @@ func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
 	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
 	r.PackagePaths = []string{edgesPkg}
 	r.Types = []WireType{{PkgPath: edgesPkg, Name: "DashComma"}}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 
 	mustContain(t, "dash-comma", out, "export interface DashComma {")
 	mustContain(t, "dash-comma", out, "  name: string;")
@@ -79,7 +79,7 @@ func TestFieldDoc_scopedToDeclaringField(t *testing.T) {
 		{PkgPath: crossrefPkg, Name: "Alpha"},
 		{PkgPath: crossrefPkg, Name: "Beta"},
 	}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 
 	mustContain(t, "field-doc", out,
 		"export interface Alpha {\n  /** AlphaPathDoc marks alpha. */\n  path: string;\n}")
@@ -97,7 +97,7 @@ func TestTypeKey_fullyQualifiesNamedType(t *testing.T) {
 	// Keyed by the SHORT name; the full typeKey never matches, so the field
 	// resolves to unknown rather than the short-keyed mapping.
 	r.TypeMappings = map[string]string{"CustomID": "ShortMapped"}
-	out := r.GenerateTypes()
+	out := mustGen(t, r.GenerateTypes)
 
 	mustContain(t, "typekey", out, "id: unknown;")
 	mustNotContain(t, "typekey", out, "ShortMapped")

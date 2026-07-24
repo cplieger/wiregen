@@ -245,7 +245,7 @@ The following are intentionally not supported:
 | Feature | Reason |
 | --- | --- |
 | **Go generics (type parameters)** | The Go type system can't represent uninstantiated generic types here. Register concrete instantiations instead. |
-| **Nullable vs optional distinction** | `T \ | null` vs `?:`; current consumers treat null and absent identically. Pointer/omitempty → optional only. |
+| **Nullable vs optional distinction** | `T \| null` vs `?:`; current consumers treat null and absent identically. Pointer/omitempty → optional only. |
 | **`tstype` struct tag hints** | `TypeMappings` provides the same escape hatch at the registry level. |
 | **Inline anonymous struct fields** | A field whose type is an inline `struct { … }` literal maps to `unknown`. Register it as a named type instead. (Embedded _named_ structs are flattened, not unknown.) |
 

@@ -23,17 +23,19 @@ A `Registry` is built in two phases (`wiregen.go`):
 
 Types are registered by identity with the compile-time-safe
 `TypeRef[T]()` helper, which captures the `{PkgPath, Name}` pair. Then
-`Generate(outDir)` writes the files **atomically** — it builds each
-file's content in memory, then stages it to a temp sibling and renames it
-into place (`writeFilesAtomically`), so a mid-run failure never leaves a
-half-updated output directory — or the per-file generators
+`Generate(outDir)` writes the files with **per-file atomicity**: it
+builds each file's content in memory, then stages it to a temp sibling
+and renames it into place (`writeFilesAtomically`). A staging failure
+(e.g. disk full) leaves the output directory untouched, but the rename
+pass is sequential, so the guarantee is per-file, not a multi-file
+transaction. Alternatively the per-file generators
 (`GenerateTypes`, `GenerateDecoders`, `GenerateRegistry`,
-`GenerateConstants`) return strings.
+`GenerateConstants`) return their content as `(string, error)`.
 
-`Generate` validates required imports up front and returns an error (it
-does **not** panic). The string getters keep the panic-by-design
-contract: `GenerateDecoders` panics if `ValidatorsImport` is empty, and
-`GenerateRegistry` panics if `BusImport` is empty and
+`Generate` and every per-file generator validate their required imports
+up front and return an error on any config problem; nothing exported
+panics. `GenerateDecoders` errors if `ValidatorsImport` is empty, and
+`GenerateRegistry` errors if `BusImport` is empty and
 `SelfContainedRegistry` is false.
 
 Discriminated unions are declared in Go source on a sealed interface with
@@ -63,22 +65,22 @@ These are load-bearing; changes that break them are bugs, not features.
   to a valid TS identifier with a safe fallback, and a non-identifier
   JSON key is emitted as a quoted property + bracket access. Sanitizing
   is a no-op for already-valid identifiers, so don't "simplify" a sink
-  back to a raw emit — that reintroduces non-compiling output for
+  back to a raw emit; that reintroduces non-compiling output for
   edge-case input.
 - **Unsupported by design.** Go generics, the nullable-vs-optional
   distinction, `tstype` tag hints, and inline anonymous struct fields are
   deliberate non-goals, not TODOs. `TypeMappings` is the registry-level
   escape hatch for custom type mappings.
 
-Output must also be **deterministic** — byte-identical across runs and
+Output must also be **deterministic**: byte-identical across runs and
 independent of type-registration order. Tests enforce this
-(`TestDeterministic*`, `TestCloseout_Determinism*`); keep map iteration
+(`TestGenerate_DeterministicAcrossRuns`); keep map iteration
 sorted when you touch generation.
 
 ## Local development
 
 The module targets the Go version in `go.mod` and
-has zero runtime dependencies — the only build-time dependency is
+has zero runtime dependencies; the only build-time dependency is
 `golang.org/x/tools`. Keep it that way.
 
 Run the tests:
@@ -88,8 +90,8 @@ go test ./...
 go test -race ./...
 ```
 
-Fuzz targets live alongside the unit tests (`fuzz_test.go`,
-`fuzz_completeness_test.go`). Run one with, e.g.:
+Fuzz targets live alongside the unit tests (`wiregen_fuzz_test.go`,
+`generate_fuzz_test.go`). Run one with, e.g.:
 
 ```sh
 go test -run '^$' -fuzz FuzzParseUnionDirective -fuzztime 30s
@@ -119,7 +121,7 @@ golden files with the package's `-update` flag and commit the diff:
 go test -run TestGolden -update
 ```
 
-Review the regenerated `testdata/golden/*.gen.ts` carefully — the diff is
+Review the regenerated `testdata/golden/*.gen.ts` carefully: the diff is
 the human-readable record of how the change affects emitted TypeScript.
 
 ## Commits & pull requests

@@ -504,8 +504,17 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 		fi.TSType = tsString
 		return *fi
 	}
-	// json.RawMessage → unknown
-	if pkgPath == "encoding/json" && name == "RawMessage" {
+	// json.RawMessage → unknown. Both identities are recognized because the
+	// stdlib re-homes the type: through Go 1.26 it is `type RawMessage []byte`
+	// declared in encoding/json, and from Go 1.27 (where the json/v2
+	// implementation backs v1) it is `type RawMessage = jsontext.Value`, an
+	// ALIAS. go/types resolves an alias past the alias name, so a check keyed
+	// only on "encoding/json" stops matching and the field degrades through the
+	// named-[]byte path to a TS `string` — a decoder that rejects the object or
+	// array the field actually carries. The second disjunct is unreachable on a
+	// toolchain without encoding/json/jsontext, so it changes no output today.
+	if (pkgPath == "encoding/json" && name == "RawMessage") ||
+		(pkgPath == "encoding/json/jsontext" && name == "Value") {
 		fi.TSType = tsUnknown
 		fi.IsRaw = true
 		return *fi

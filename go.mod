@@ -2,7 +2,7 @@ module github.com/cplieger/wiregen/v2
 
 go 1.26.5
 
-require golang.org/x/tools v0.48.0
+require golang.org/x/tools v0.49.0
 
 require (
 	golang.org/x/mod v0.39.0 // indirect

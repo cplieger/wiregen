@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"go/format"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -544,7 +544,7 @@ func (r *Registry) emitClientImports(w *strings.Builder, used *usedIdents, needs
 	for d := range used.decoders {
 		decoders = append(decoders, d)
 	}
-	sort.Strings(decoders)
+	slices.Sort(decoders)
 	if len(decoders) > 0 {
 		mod := strings.TrimSuffix(r.DecodersFilename, ".ts") + ".js"
 		w.WriteString("import { " + strings.Join(decoders, ", ") + " } from \"./" + tsStringLiteral(mod) + "\";\n")
@@ -554,7 +554,7 @@ func (r *Registry) emitClientImports(w *strings.Builder, used *usedIdents, needs
 	for t := range used.types {
 		types = append(types, t)
 	}
-	sort.Strings(types)
+	slices.Sort(types)
 	if len(types) > 0 {
 		w.WriteString("import type { " + strings.Join(types, ", ") + " } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
 	}

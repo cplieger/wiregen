@@ -1,6 +1,7 @@
 package wiregen
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -9,7 +10,7 @@ import (
 	"go/types"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -90,8 +91,8 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 	}
 
 	// Sort by TS name for deterministic output.
-	sort.Slice(e.types, func(i, j int) bool {
-		return r.tsName(e.types[i].Name) < r.tsName(e.types[j].Name)
+	slices.SortStableFunc(e.types, func(a, b *typeInfo) int {
+		return cmp.Compare(r.tsName(a.Name), r.tsName(b.Name))
 	})
 	return e, nil
 }
@@ -227,7 +228,7 @@ func collectStringConsts(pkg *packages.Package, need map[string]bool, found map[
 // dedupEnumValues returns the values ordered by source position and deduped by
 // value (an exported and an unexported const can share a value).
 func dedupEnumValues(vps []valPos) []string {
-	sort.Slice(vps, func(i, j int) bool { return vps[i].pos < vps[j].pos })
+	slices.SortStableFunc(vps, func(a, b valPos) int { return cmp.Compare(a.pos, b.pos) })
 	seen := map[string]bool{}
 	var vals []string
 	for _, vp := range vps {

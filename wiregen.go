@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -841,6 +841,6 @@ func enumNamesSlice(m map[string]EnumDef) []string {
 	for n := range m {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }

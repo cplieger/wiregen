@@ -1,8 +1,9 @@
 package wiregen
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -38,7 +39,9 @@ func (r *Registry) emitEnumTypes(w *strings.Builder) {
 		seenEnumTS[tn] = true
 		enumNames = append(enumNames, name)
 	}
-	sort.Slice(enumNames, func(i, j int) bool { return r.tsEnumName(enumNames[i]) < r.tsEnumName(enumNames[j]) })
+	slices.SortStableFunc(enumNames, func(a, b string) int {
+		return cmp.Compare(r.tsEnumName(a), r.tsEnumName(b))
+	})
 	for _, name := range enumNames {
 		def := r.Enums[name]
 		w.WriteString("export type " + r.tsEnumName(name) + " = ")
@@ -243,7 +246,7 @@ func (r *Registry) emitTypeImports(w *strings.Builder, used *usedIdents, engine 
 	for n := range usedSet {
 		sorted = append(sorted, n)
 	}
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 	if len(sorted) > 0 {
 		w.WriteString("import type { ")
 		w.WriteString(strings.Join(sorted, ", "))
@@ -332,7 +335,7 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *used
 	for k := range dm {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	for _, k := range keys {
 		variant := dm[k]
@@ -589,7 +592,7 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 			decoderImports = append(decoderImports, dn)
 		}
 	}
-	sort.Strings(decoderImports)
+	slices.Sort(decoderImports)
 
 	if r.SelfContainedRegistry {
 		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n")

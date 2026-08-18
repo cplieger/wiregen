@@ -82,7 +82,7 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 | `WithRegisterFuncName(v string)` | Function name imported from the bus module (default: `"registerSSEDecoder"`). |
 | `WithRegistryFuncName(v string)` | Exported function name in the registry file (default: `"registerAllSSEDecoders"`). |
 | `WithSelfContainedRegistry(v bool)` | Use a self-contained Map-based registry instead of importing from BusImport. |
-| `WithFilenames(types, decoders, registry, constants string)` | Override output filenames (pass `""` to keep defaults). |
+| `WithFilenames(names Filenames)` | Override output filenames via the `Filenames` struct (an empty field keeps that file's default). |
 | `WithClientFilename(v string)` | Override the generated client filename (default: `"client.gen.ts"`). |
 | `WithValidatorsFile(v string)` | Write the library-owned validators module at this outDir-relative path on every run. |
 

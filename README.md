@@ -1,6 +1,6 @@
 # wiregen
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen/v2.svg)](https://pkg.go.dev/github.com/cplieger/wiregen/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen/v3.svg)](https://pkg.go.dev/github.com/cplieger/wiregen/v3)
 [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/wiregen)](https://github.com/cplieger/wiregen/blob/main/go.mod)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/coverage.json)](https://github.com/cplieger/wiregen/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/mutation.json)](https://github.com/cplieger/wiregen/issues?q=label%3Agremlins-tracker)
@@ -14,10 +14,10 @@ wiregen is a standalone Go library that takes a set of registered Go types and e
 ## Install
 
 ```
-go get github.com/cplieger/wiregen/v2@latest
+go get github.com/cplieger/wiregen/v3@latest
 ```
 
-Upgrading from v1: the module path is now `…/wiregen/v2`. Every per-file string generator returns `(string, error)` instead of panicking on config errors. Non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
+Upgrading to v3: the module path is now `…/wiregen/v3`, and `WithFilenames` takes a `Filenames` struct instead of four positional filenames (an empty field keeps that file's default, so the zero `Filenames` overrides nothing). Upgrading from v1 to v2 was: Every per-file string generator returns `(string, error)` instead of panicking on config errors. Non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
 
 ## Usage
 
@@ -26,7 +26,7 @@ Create a registry with `NewRegistry` (functional options configure behavior knob
 ```go
 package main
 
-import "github.com/cplieger/wiregen/v2"
+import "github.com/cplieger/wiregen/v3"
 
 type Status string
 

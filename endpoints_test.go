@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/crossref"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/crossref"
 )
 
 // newEndpointRegistry returns a registry with the crossref.Item type

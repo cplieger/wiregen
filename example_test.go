@@ -3,8 +3,8 @@ package wiregen_test
 import (
 	"fmt"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
 )
 
 func Example() {
@@ -12,7 +12,7 @@ func Example() {
 		wiregen.WithValidatorsImport("./validators.js"),
 		wiregen.WithBusImport("./bus.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 	r.SSEEvents = []wiregen.SSERegEntry{
 		{EventType: "addr", TypeName: "Address"},

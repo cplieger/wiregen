@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
 )
 
 func FuzzGenerate(f *testing.F) {
@@ -20,7 +20,7 @@ func FuzzGenerate(f *testing.F) {
 			wiregen.WithValidatorsImport(validatorsImport),
 			wiregen.WithBusImport(busImport),
 		)
-		r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+		r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.Address](),
 			wiregen.TypeRef[basic.User](),

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
-	"github.com/cplieger/wiregen/v2/testdata/edges"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
+	"github.com/cplieger/wiregen/v3/testdata/edges"
 )
 
 // Tests for embedded-struct flattening and encoding/json field-promotion
@@ -34,7 +34,7 @@ func TestEmbeddedStructFlatten(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.WithEmbedding]()}
 	out := mustGen(t, r.GenerateTypes)
 	if !strings.Contains(out, "id: number;") {
@@ -176,7 +176,7 @@ func TestEmbeddedFieldWithDashTag(t *testing.T) {
 // NOT dropped as ambiguous), regardless of embed declaration order.
 func TestPromotion_TaggedDominatesUntaggedAtEqualDepth(t *testing.T) {
 	for _, name := range []string{"TaggedDominatesA", "TaggedDominatesB"} {
-		r := edgesReg(wiregen.WireType{PkgPath: "github.com/cplieger/wiregen/v2/testdata/edges", Name: name})
+		r := edgesReg(wiregen.WireType{PkgPath: "github.com/cplieger/wiregen/v3/testdata/edges", Name: name})
 		body := ifaceBody(mustGen(t, r.GenerateTypes), name)
 		if got := strings.Count(body, "Name:"); got != 1 {
 			t.Errorf("%s: tagged field should win at equal depth (exactly 1 Name), got %d:\n%s", name, got, body)

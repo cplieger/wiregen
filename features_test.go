@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/crossref"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/crossref"
 )
 
 // Enum Values are auto-discovered from the type's const block (source order)
 // when left empty.
 func TestEnumValues_AutoDiscovered(t *testing.T) {
 	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./validators.js"))
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/crossref"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/crossref"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[crossref.Palette]()}
 	r.Enums = map[string]wiregen.EnumDef{"Color": {}} // empty → discover
 
@@ -28,7 +28,7 @@ func TestEnumValues_AutoDiscovered(t *testing.T) {
 // dependency (dep.Color) must not pollute crossref.Color's values.
 func TestEnumValues_IgnoresDepCollision(t *testing.T) {
 	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./validators.js"))
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/crossref"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/crossref"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[crossref.Palette]()}
 	r.Enums = map[string]wiregen.EnumDef{"Color": {}}
 
@@ -44,7 +44,7 @@ func TestEnumValues_IgnoresDepCollision(t *testing.T) {
 // Explicit Values always win over discovery.
 func TestEnumValues_ExplicitWins(t *testing.T) {
 	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./validators.js"))
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/crossref"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/crossref"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[crossref.Palette]()}
 	r.Enums = map[string]wiregen.EnumDef{"Color": {Values: []string{"red", "blue"}}}
 

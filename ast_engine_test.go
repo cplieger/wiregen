@@ -48,8 +48,8 @@ func TestNewASTEngine_discoversEnumsWithoutRegisteredTypes(t *testing.T) {
 	r.Enums = map[string]EnumDef{"Color": {}} // empty Values -> discover
 
 	out := mustGen(t, r.GenerateTypes)
-	mustContain(t, "enum-discovery", out, `export type Color = "red" | "green" | "blue";`)
-	mustNotContain(t, "enum-discovery", out, "export type Color = ;")
+	checkContains(t, "enum-discovery", out, `export type Color = "red" | "green" | "blue";`)
+	checkNotContains(t, "enum-discovery", out, "export type Color = ;")
 }
 
 // TestResolveStructFields_dashCommaFieldEmitted pins that a field tagged
@@ -63,10 +63,10 @@ func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
 	r.Types = []WireType{{PkgPath: edgesPkg, Name: "DashComma"}}
 	out := mustGen(t, r.GenerateTypes)
 
-	mustContain(t, "dash-comma", out, "export interface DashComma {")
-	mustContain(t, "dash-comma", out, "  name: string;")
-	mustContain(t, "dash-comma", out, "  \"-\": string;")
-	mustNotContain(t, "dash-comma", out, "  -: string;")
+	checkContains(t, "dash-comma", out, "export interface DashComma {")
+	checkContains(t, "dash-comma", out, "  name: string;")
+	checkContains(t, "dash-comma", out, "  \"-\": string;")
+	checkNotContains(t, "dash-comma", out, "  -: string;")
 }
 
 // TestFieldDoc_scopedToDeclaringField pins that each field's JSDoc comes from
@@ -81,9 +81,9 @@ func TestFieldDoc_scopedToDeclaringField(t *testing.T) {
 	}
 	out := mustGen(t, r.GenerateTypes)
 
-	mustContain(t, "field-doc", out,
+	checkContains(t, "field-doc", out,
 		"export interface Alpha {\n  /** AlphaPathDoc marks alpha. */\n  path: string;\n}")
-	mustContain(t, "field-doc", out,
+	checkContains(t, "field-doc", out,
 		"export interface Beta {\n  /** BetaPathDoc marks beta. */\n  path: string;\n}")
 }
 
@@ -99,8 +99,8 @@ func TestTypeKey_fullyQualifiesNamedType(t *testing.T) {
 	r.TypeMappings = map[string]string{"CustomID": "ShortMapped"}
 	out := mustGen(t, r.GenerateTypes)
 
-	mustContain(t, "typekey", out, "id: unknown;")
-	mustNotContain(t, "typekey", out, "ShortMapped")
+	checkContains(t, "typekey", out, "id: unknown;")
+	checkNotContains(t, "typekey", out, "ShortMapped")
 }
 
 // TestPackagesError_formatsErrorsWithAndWithoutPosition pins how packagesError

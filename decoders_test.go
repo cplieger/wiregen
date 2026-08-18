@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
-	"github.com/cplieger/wiregen/v2/testdata/edges"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
+	"github.com/cplieger/wiregen/v3/testdata/edges"
 )
 
 // Tests for decoder emission: the primitive validators chosen per field, the
@@ -60,7 +60,7 @@ func TestNoEmptyTypeImport(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasBytes]()}
 	dec := mustGen(t, r.GenerateDecoders)
 	// HasBytes references no other registered type, so type imports are empty —

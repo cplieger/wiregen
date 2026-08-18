@@ -42,9 +42,9 @@ func TestGenerateTypes_unionDocEmitted(t *testing.T) {
 	}
 	out := mustGen(t, r.GenerateTypes)
 
-	mustContain(t, "union-doc", out,
+	checkContains(t, "union-doc", out,
 		"export type EventData = CoverageEvent | NotifyEvent | ScanEvent;")
-	mustContain(t, "union-doc", out, "EventData is a sealed interface for event payloads")
+	checkContains(t, "union-doc", out, "EventData is a sealed interface for event payloads")
 }
 
 // TestGenerateDecoders_emptyRegistryImports pins the import block for the
@@ -55,8 +55,8 @@ func TestGenerateDecoders_emptyRegistryImports(t *testing.T) {
 	r := &Registry{ValidatorsImport: "./v.js"}
 	out := mustGen(t, r.GenerateDecoders)
 
-	mustContain(t, "helpers-import", out, `import { type Decoder } from "./v.js";`)
-	mustNotContain(t, "types-import", out, "import type {")
+	checkContains(t, "helpers-import", out, `import { type Decoder } from "./v.js";`)
+	checkNotContains(t, "types-import", out, "import type {")
 	if !strings.HasSuffix(out, "\";\n\n") {
 		t.Errorf("empty-registry decoder output should end with import + blank line\n--- output ---\n%q", out)
 	}
@@ -74,8 +74,8 @@ func TestEmitDecoder_structLiteralShape(t *testing.T) {
 	}
 	out := mustGen(t, r.GenerateDecoders)
 
-	mustContain(t, "empty-struct", out, "const out: EmptyStruct = {};")
-	mustContain(t, "all-optional", out, "const out: AllOptional = {\n  };")
+	checkContains(t, "empty-struct", out, "const out: EmptyStruct = {};")
+	checkContains(t, "all-optional", out, "const out: AllOptional = {\n  };")
 }
 
 // TestEmitEnumTypes_zeroValuesEmitsNever pins the zero-values guard in
@@ -85,8 +85,8 @@ func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
 	r := &Registry{}
 	r.Enums = map[string]EnumDef{"Phantom": {}}
 	out := mustGen(t, r.GenerateTypes)
-	mustContain(t, "never-enum", out, "export type Phantom = never;")
-	mustNotContain(t, "never-enum", out, "export type Phantom = ;")
+	checkContains(t, "never-enum", out, "export type Phantom = never;")
+	checkNotContains(t, "never-enum", out, "export type Phantom = ;")
 }
 
 // TestEmitOptionalField_nonIdentWireNameUsesBracketRef pins the
@@ -99,8 +99,8 @@ func TestEmitOptionalField_nonIdentWireNameUsesBracketRef(t *testing.T) {
 	var w strings.Builder
 	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
 	out := w.String()
-	mustContain(t, "opt-nonident", out, `const contenttype = o["content-type"] === null ? undefined : optStr(o, "content-type", "$.x");`)
-	mustContain(t, "opt-nonident", out, `if (contenttype !== undefined) out["content-type"] = contenttype;`)
+	checkContains(t, "opt-nonident", out, `const contenttype = o["content-type"] === null ? undefined : optStr(o, "content-type", "$.x");`)
+	checkContains(t, "opt-nonident", out, `if (contenttype !== undefined) out["content-type"] = contenttype;`)
 }
 
 // TestEmitOptionalField_emptyVarNameFallsBackToFieldVal pins the localVarName
@@ -116,7 +116,7 @@ func TestEmitOptionalField_emptyVarNameFallsBackToFieldVal(t *testing.T) {
 	var w strings.Builder
 	r.emitOptionalField(&w, &fieldInfo{WireName: "_", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
 	out := w.String()
-	mustContain(t, "opt-empty-varname", out, `const fieldVal = o["_"] === null ? undefined : optStr(o, "_", "$.x");`)
-	mustContain(t, "opt-empty-varname", out, `if (fieldVal !== undefined) out._ = fieldVal;`)
-	mustNotContain(t, "opt-empty-varname", out, "const  =")
+	checkContains(t, "opt-empty-varname", out, `const fieldVal = o["_"] === null ? undefined : optStr(o, "_", "$.x");`)
+	checkContains(t, "opt-empty-varname", out, `if (fieldVal !== undefined) out._ = fieldVal;`)
+	checkNotContains(t, "opt-empty-varname", out, "const  =")
 }

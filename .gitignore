@@ -15,8 +15,7 @@
 go.work
 go.work.sum
 
-# Kiro skill artifacts (app-review, code-review, judgement, steering-maintenance)
+# Kiro skill artifacts (app-review, judgement, steering-maintenance)
 **/.app-review/
-**/.code-review/
 **/.judgement/
 **/.steering-maintenance/

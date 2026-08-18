@@ -4,13 +4,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/crossref"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/crossref"
 )
 
 func crossrefRegistry() *wiregen.Registry {
 	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("./validators.js"))
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/crossref"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/crossref"}
 	r.Types = []wiregen.WireType{
 		wiregen.TypeRef[crossref.Container](),
 		wiregen.TypeRef[crossref.Item](),

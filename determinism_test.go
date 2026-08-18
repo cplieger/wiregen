@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
-	"github.com/cplieger/wiregen/v2/testdata/edges"
-	"github.com/cplieger/wiregen/v2/testdata/unions"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
+	"github.com/cplieger/wiregen/v3/testdata/edges"
+	"github.com/cplieger/wiregen/v3/testdata/unions"
 )
 
 // Tests that generated output is deterministic: byte-identical run to run, and
@@ -24,9 +24,9 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 			wiregen.WithBusImport("./b.js"),
 		)
 		r.PackagePaths = []string{
-			"github.com/cplieger/wiregen/v2/testdata/basic",
-			"github.com/cplieger/wiregen/v2/testdata/edges",
-			"github.com/cplieger/wiregen/v2/testdata/unions",
+			"github.com/cplieger/wiregen/v3/testdata/basic",
+			"github.com/cplieger/wiregen/v3/testdata/edges",
+			"github.com/cplieger/wiregen/v3/testdata/unions",
 		}
 		r.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.User](),
@@ -48,7 +48,7 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 			wiregen.TypeRef[unions.CoverageEvent](),
 			wiregen.TypeRef[unions.NotifyEvent](),
 			wiregen.TypeRef[unions.ScanEvent](),
-			{PkgPath: "github.com/cplieger/wiregen/v2/testdata/unions", Name: "EventData"},
+			{PkgPath: "github.com/cplieger/wiregen/v3/testdata/unions", Name: "EventData"},
 		}
 		r.Enums = map[string]wiregen.EnumDef{
 			"Status":   {Values: []string{"active", "inactive", "banned"}},
@@ -103,7 +103,7 @@ func TestGenerateTypes_TypeOrderIndependent(t *testing.T) {
 			wiregen.WithValidatorsImport("./v.js"),
 			wiregen.WithBusImport("./b.js"),
 		)
-		r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+		r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r.Types = types
 		r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
 		return r
@@ -130,7 +130,7 @@ func TestGenerateDecoders_TypeOrderIndependent(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{
 		wiregen.TypeRef[basic.User](),
 		wiregen.TypeRef[basic.Address](),
@@ -145,7 +145,7 @@ func TestGenerateDecoders_TypeOrderIndependent(t *testing.T) {
 			wiregen.WithValidatorsImport("./v.js"),
 			wiregen.WithBusImport("./b.js"),
 		)
-		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r2.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.HasMap](),
 			wiregen.TypeRef[basic.HasBytes](),
@@ -166,7 +166,7 @@ func TestGenerateTypes_EnumOrderIndependent(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 	r.Enums = map[string]wiregen.EnumDef{}
 	for _, name := range []string{"Zebra", "Alpha", "Mango", "Beta", "Delta", "Charlie", "Echo", "Foxtrot"} {
@@ -178,7 +178,7 @@ func TestGenerateTypes_EnumOrderIndependent(t *testing.T) {
 			wiregen.WithValidatorsImport("./v.js"),
 			wiregen.WithBusImport("./b.js"),
 		)
-		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r2.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 		r2.Enums = map[string]wiregen.EnumDef{}
 		for _, name := range []string{"Foxtrot", "Echo", "Charlie", "Delta", "Beta", "Mango", "Alpha", "Zebra"} {

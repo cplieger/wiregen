@@ -49,7 +49,7 @@ func (r *Registry) emitEnumTypes(w *strings.Builder) {
 			// A registered enum that resolved to zero values (no explicit
 			// Values and no string const block discovered in a loaded
 			// package) must never emit "= ;" (invalid TS — see the
-			// mustNotContain guard in
+			// checkNotContains guard in
 			// TestNewASTEngine_discoversEnumsWithoutRegisteredTypes). Emit the
 			// bottom type so output stays syntactically valid; the empty
 			// reqOneOf(...) membership check then fails clearly at decode time.

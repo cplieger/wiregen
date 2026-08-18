@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/unions"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/unions"
 )
 
 // Tests for //wiregen:union handling: the emitted `export type` alias and the
 // runtime discriminator decoder, including the partial/empty/nil
 // DiscriminatorMap behaviors and the interface-only registration case.
 
-const unionsPkg = "github.com/cplieger/wiregen/v2/testdata/unions"
+const unionsPkg = "github.com/cplieger/wiregen/v3/testdata/unions"
 
 // unionReg registers the three event variants plus the EventData union
 // interface. Callers set DiscriminatorMap to choose the decoder behavior.

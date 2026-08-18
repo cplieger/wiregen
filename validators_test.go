@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
 )
 
 // validatorsContract is the exact set of names the validators module MUST
@@ -27,7 +27,7 @@ func validatorsRegistry() *wiregen.Registry {
 		wiregen.WithValidatorsImport("./test-validators.js"),
 		wiregen.WithBusImport("./test-bus.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{
 		wiregen.TypeRef[basic.Address](),
 		wiregen.TypeRef[basic.User](),
@@ -118,7 +118,10 @@ func TestGenerate_ValidatorsFile(t *testing.T) {
 		t.Fatalf("validators module not written at ../validators.ts: %v", err)
 	}
 	if want := r2.GenerateValidators(); string(got) != want {
-		t.Errorf("written validators module differs from GenerateValidators() output")
+		// Print both sides with a direction legend: the written file and the
+		// generator's own output are two computations of one artifact, and a
+		// bare "they differ" leaves the reader no way to tell WHICH drifted.
+		t.Errorf("written validators module differs from GenerateValidators() output\n--- want (GenerateValidators) ---\n%s\n+++ got (written file) +++\n%s", want, got)
 	}
 	if !strings.Contains(string(got), "DO NOT EDIT") {
 		t.Errorf("written validators module missing the DO-NOT-EDIT banner")

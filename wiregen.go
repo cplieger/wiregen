@@ -119,20 +119,41 @@ func WithSelfContainedRegistry(v bool) Option {
 	return func(o *options) { o.selfContainedRegistry = v }
 }
 
-// WithFilenames overrides the output filenames for generated files.
-func WithFilenames(types, decoders, registry, constants string) Option {
+// Filenames names the four generated output files. It is a struct rather than
+// four positional strings because the four are same-typed and adjacent: a
+// transposed pair compiled and wrote each file's content under another file's
+// name, which a build only notices when an importer fails to find a symbol.
+// Field names label each one at the call site.
+//
+// An empty field keeps that file's default name, so a caller overriding one
+// name sets one field and leaves the rest zero — the zero Filenames overrides
+// nothing and is exactly equivalent to omitting WithFilenames.
+type Filenames struct {
+	// Types names the file holding the generated type declarations.
+	Types string
+	// Decoders names the file holding the generated decoders.
+	Decoders string
+	// Registry names the file holding the generated registry.
+	Registry string
+	// Constants names the file holding the generated constants.
+	Constants string
+}
+
+// WithFilenames overrides the output filenames for generated files. An empty
+// field in names keeps that file's default (see [Filenames]).
+func WithFilenames(names Filenames) Option {
 	return func(o *options) {
-		if types != "" {
-			o.typesFilename = types
+		if names.Types != "" {
+			o.typesFilename = names.Types
 		}
-		if decoders != "" {
-			o.decodersFilename = decoders
+		if names.Decoders != "" {
+			o.decodersFilename = names.Decoders
 		}
-		if registry != "" {
-			o.registryFilename = registry
+		if names.Registry != "" {
+			o.registryFilename = names.Registry
 		}
-		if constants != "" {
-			o.constantsFilename = constants
+		if names.Constants != "" {
+			o.constantsFilename = names.Constants
 		}
 	}
 }

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/basic"
-	"github.com/cplieger/wiregen/v2/testdata/edges"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/basic"
+	"github.com/cplieger/wiregen/v3/testdata/edges"
 )
 
 // Tests for the Go-type → TypeScript-type mapping performed by the AST field
@@ -14,7 +14,7 @@ import (
 // maps, aliases, time.Time, []byte, json.RawMessage, interfaces, and the
 // empty/optional/unregistered edge cases.
 
-const edgesPkg = "github.com/cplieger/wiregen/v2/testdata/edges"
+const edgesPkg = "github.com/cplieger/wiregen/v3/testdata/edges"
 
 // edgesReg builds a registry over the edges fixture package for the given
 // registered types. Shared by the type-mapping, embedding, tag, and decoder
@@ -164,7 +164,7 @@ func TestTimeToString(t *testing.T) {
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v2/testdata/basic"}
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasTime]()}
 	out := mustGen(t, r.GenerateTypes)
 	if !strings.Contains(out, "created: string;") {

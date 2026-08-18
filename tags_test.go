@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v2"
-	"github.com/cplieger/wiregen/v2/testdata/edges"
+	"github.com/cplieger/wiregen/v3"
+	"github.com/cplieger/wiregen/v3/testdata/edges"
 )
 
 // Tests for json struct-tag semantics: the "-" skip, the "-," field-named-dash

@@ -12,27 +12,26 @@ import (
 // --- shared internal test helpers ---
 
 const (
-	basicPkg    = "github.com/cplieger/wiregen/v2/testdata/basic"
-	edgesPkg    = "github.com/cplieger/wiregen/v2/testdata/edges"
-	unionsPkg   = "github.com/cplieger/wiregen/v2/testdata/unions"
-	crossrefPkg = "github.com/cplieger/wiregen/v2/testdata/crossref"
+	basicPkg    = "github.com/cplieger/wiregen/v3/testdata/basic"
+	edgesPkg    = "github.com/cplieger/wiregen/v3/testdata/edges"
+	unionsPkg   = "github.com/cplieger/wiregen/v3/testdata/unions"
+	crossrefPkg = "github.com/cplieger/wiregen/v3/testdata/crossref"
 )
 
-func eqStr(t *testing.T, fn, in, got, want string) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s(%q) = %q, want %q", fn, in, got, want)
-	}
-}
-
-func mustContain(t *testing.T, label, out, want string) {
+// checkContains and checkNotContains are the generated-output checks in
+// report-a-verdict form. The former helpers were named mustContain and
+// mustNotContain, which read as aborting (the must* convention) while they only
+// ever reported. These keep the shared message but say plainly that they
+// report, and each still marks itself a helper so the failure points at the
+// assertion's line.
+func checkContains(t *testing.T, label, out, want string) {
 	t.Helper()
 	if !strings.Contains(out, want) {
 		t.Errorf("%s: output is missing %q\n--- output ---\n%s", label, want, out)
 	}
 }
 
-func mustNotContain(t *testing.T, label, out, bad string) {
+func checkNotContains(t *testing.T, label, out, bad string) {
 	t.Helper()
 	if strings.Contains(out, bad) {
 		t.Errorf("%s: output unexpectedly contains %q\n--- output ---\n%s", label, bad, out)
@@ -65,7 +64,9 @@ func TestPathName_snakeCase(t *testing.T) {
 		{"fooBar", "foo_bar"},         // plain camelCase boundary
 	}
 	for _, c := range cases {
-		eqStr(t, "pathName", c.in, r.pathName(c.in), c.want)
+		if got := r.pathName(c.in); got != c.want {
+			t.Errorf("pathName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -82,7 +83,9 @@ func TestEnumConstName_screamingSnake(t *testing.T) {
 		{"aBCd", "A_B_CDS"},
 	}
 	for _, c := range cases {
-		eqStr(t, "enumConstName", c.in, r.enumConstName(c.in), c.want)
+		if got := r.enumConstName(c.in); got != c.want {
+			t.Errorf("enumConstName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -99,7 +102,9 @@ func TestSanitizeTSIdent_charClass(t *testing.T) {
 		{"0a", "a"}, // leading digit dropped
 	}
 	for _, c := range cases {
-		eqStr(t, "sanitizeTSIdent", c.in, sanitizeTSIdent(c.in), c.want)
+		if got := sanitizeTSIdent(c.in); got != c.want {
+			t.Errorf("sanitizeTSIdent(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -155,7 +160,9 @@ func TestSanitizeVarName(t *testing.T) {
 		{"type_error", "typeError"},
 	}
 	for _, c := range cases {
-		eqStr(t, "sanitizeVarName", c.in, sanitizeVarName(c.in), c.want)
+		if got := sanitizeVarName(c.in); got != c.want {
+			t.Errorf("sanitizeVarName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

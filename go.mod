@@ -1,6 +1,6 @@
 module github.com/cplieger/wiregen/v2
 
-go 1.26.7
+go 1.27.0
 
 require golang.org/x/tools v0.49.0
 

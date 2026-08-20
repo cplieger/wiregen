@@ -3,6 +3,7 @@ package wiregen
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -242,11 +243,7 @@ func (r *Registry) emitTypeImports(w *strings.Builder, used *usedIdents, engine 
 			usedSet[n] = true
 		}
 	}
-	sorted := make([]string, 0, len(usedSet))
-	for n := range usedSet {
-		sorted = append(sorted, n)
-	}
-	slices.Sort(sorted)
+	sorted := slices.Sorted(maps.Keys(usedSet))
 	if len(sorted) > 0 {
 		w.WriteString("import type { ")
 		w.WriteString(strings.Join(sorted, ", "))
@@ -330,14 +327,8 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *used
 	w.WriteString("export const " + r.decoderName(ti.Name) + ": (" + disc + ": string, v: unknown) => " + tn + " = (" + disc + ", v) => {\n")
 	w.WriteString("  switch (" + disc + ") {\n")
 
-	// Sort keys for determinism
-	keys := make([]string, 0, len(dm))
-	for k := range dm {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-
-	for _, k := range keys {
+	// Sorted for determinism.
+	for _, k := range slices.Sorted(maps.Keys(dm)) {
 		variant := dm[k]
 		w.WriteString("    case \"" + tsStringLiteral(k) + "\": return " + r.decoderName(variant) + "(v);\n")
 	}
@@ -583,16 +574,11 @@ func primHelperAST(tsType string, optional bool) string {
 func (r *Registry) generateRegistry(w *strings.Builder) {
 	w.WriteString(r.HeaderComment)
 
-	decoderImports := make([]string, 0)
 	seen := map[string]bool{}
 	for _, e := range r.SSEEvents {
-		dn := r.sseDecoderName(e.TypeName)
-		if !seen[dn] {
-			seen[dn] = true
-			decoderImports = append(decoderImports, dn)
-		}
+		seen[r.sseDecoderName(e.TypeName)] = true
 	}
-	slices.Sort(decoderImports)
+	decoderImports := slices.Sorted(maps.Keys(seen))
 
 	if r.SelfContainedRegistry {
 		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n")

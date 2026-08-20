@@ -7,6 +7,7 @@ package wiregen
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -858,10 +859,5 @@ func isIdentChar(c byte) bool {
 }
 
 func enumNamesSlice(m map[string]EnumDef) []string {
-	names := make([]string, 0, len(m))
-	for n := range m {
-		names = append(names, n)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(m))
 }

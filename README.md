@@ -17,8 +17,6 @@ wiregen is a standalone Go library that takes a set of registered Go types and e
 go get github.com/cplieger/wiregen/v3@latest
 ```
 
-Upgrading to v3: the module path is now `…/wiregen/v3`; `WithFilenames` takes a `Filenames` struct instead of four positional filenames (an empty field keeps that file's default, so the zero `Filenames` overrides nothing); and `Generate`, `GenerateTypes` and `GenerateDecoders` take a leading `context.Context`, so a caller can bound or cancel the package load instead of waiting out a `go list` that hangs. Upgrading from v1 to v2 was: Every per-file string generator returns `(string, error)` instead of panicking on config errors. Non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
-
 ## Usage
 
 Create a registry with `NewRegistry` (functional options configure behavior knobs), then set payload data via the exported fields:

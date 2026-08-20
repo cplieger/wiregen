@@ -436,6 +436,87 @@ func TestNewRegistry_WithFilenames(t *testing.T) {
 	}
 }
 
+// TestWithFilenames_CrossImportsFollowTheNames pins the module specifiers the
+// generated files use to import each OTHER against the renamed files. A
+// renamed decoders file that the registry still imports as
+// "./decoders.gen.js", or a renamed types file the decoders still import as
+// "./types.gen.js", is a generated tree that does not resolve — the exact case
+// WithFilenames exists for, and the case the file-existence checks above miss.
+func TestWithFilenames_CrossImportsFollowTheNames(t *testing.T) {
+	newReg := func(self bool) *wiregen.Registry {
+		r := wiregen.NewRegistry(
+			wiregen.WithValidatorsImport("./v.js"),
+			wiregen.WithBusImport("./b.js"),
+			wiregen.WithSelfContainedRegistry(self),
+			wiregen.WithFilenames(wiregen.Filenames{Types: "my_types.ts", Decoders: "my_decoders.ts"}),
+		)
+		r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
+		r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Notification]()}
+		r.SSEEvents = []wiregen.SSERegEntry{{EventType: "notif", TypeName: "Notification"}}
+		return r
+	}
+	for _, tc := range []struct {
+		name string
+		self bool
+	}{{"busRegistry", false}, {"selfContainedRegistry", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := mustGen(t, newReg(tc.self).GenerateRegistry)
+			if !strings.Contains(out, `from "./my_decoders.js"`) {
+				t.Errorf("GenerateRegistry() = missing `from \"./my_decoders.js\"`, got:\n%s", out)
+			}
+			if strings.Contains(out, "decoders.gen.js") {
+				t.Errorf("GenerateRegistry() = still names the default decoders module, got:\n%s", out)
+			}
+		})
+	}
+	t.Run("decodersImportTypes", func(t *testing.T) {
+		out := mustGen(t, newReg(false).GenerateDecoders)
+		if !strings.Contains(out, `from "./my_types.js"`) {
+			t.Errorf("GenerateDecoders() = missing `from \"./my_types.js\"`, got:\n%s", out)
+		}
+		if strings.Contains(out, "types.gen.js") {
+			t.Errorf("GenerateDecoders() = still names the default types module, got:\n%s", out)
+		}
+	})
+	t.Run("explicitTypesImportPathWins", func(t *testing.T) {
+		r := newReg(false)
+		r.TypesImportPath = "../shared/types.js"
+		out := mustGen(t, r.GenerateDecoders)
+		if !strings.Contains(out, `from "../shared/types.js"`) {
+			t.Errorf("GenerateDecoders() = explicit TypesImportPath ignored, got:\n%s", out)
+		}
+	})
+}
+
+// TestWithFilenames_ModuleSpecifierExtensions pins the source-to-module
+// extension rewrite for the TypeScript extensions a consumer can legitimately
+// use: .mts and .cts emit .mjs and .cjs, every other extension (and a name
+// with none) emits .js.
+func TestWithFilenames_ModuleSpecifierExtensions(t *testing.T) {
+	for _, tc := range []struct{ decoders, want string }{
+		{"my_decoders.ts", `from "./my_decoders.js"`},
+		{"my_decoders.tsx", `from "./my_decoders.js"`},
+		{"my_decoders.mts", `from "./my_decoders.mjs"`},
+		{"my_decoders.cts", `from "./my_decoders.cjs"`},
+		{"my_decoders", `from "./my_decoders.js"`},
+	} {
+		t.Run(tc.decoders, func(t *testing.T) {
+			r := wiregen.NewRegistry(
+				wiregen.WithValidatorsImport("./v.js"),
+				wiregen.WithBusImport("./b.js"),
+				wiregen.WithFilenames(wiregen.Filenames{Decoders: tc.decoders}),
+			)
+			r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
+			r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Notification]()}
+			r.SSEEvents = []wiregen.SSERegEntry{{EventType: "notif", TypeName: "Notification"}}
+			out := mustGen(t, r.GenerateRegistry)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("GenerateRegistry() with Decoders=%q = missing %s, got:\n%s", tc.decoders, tc.want, out)
+			}
+		})
+	}
+}
+
 func TestNewRegistry_WithRegistryFuncName(t *testing.T) {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./v.js"),

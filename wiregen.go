@@ -91,7 +91,11 @@ func WithValidatorsFile(v string) Option { return func(o *options) { o.validator
 func WithTransportImport(v string) Option { return func(o *options) { o.transportImport = v } }
 
 // WithClientFilename overrides the generated client filename
-// (default "client.gen.ts").
+// (default "client.gen.ts"). It is a standalone option rather than a
+// [Filenames] field because Filenames exists to label a RUN of same-typed
+// positional arguments, which a single string does not have — and a fifth
+// field would push the struct to 80 bytes, which gocritic's hugeParam
+// correctly flags for a by-value parameter.
 func WithClientFilename(v string) Option {
 	return func(o *options) {
 		if v != "" {
@@ -120,15 +124,21 @@ func WithSelfContainedRegistry(v bool) Option {
 	return func(o *options) { o.selfContainedRegistry = v }
 }
 
-// Filenames names the four generated output files. It is a struct rather than
-// four positional strings because the four are same-typed and adjacent: a
-// transposed pair compiled and wrote each file's content under another file's
-// name, which a build only notices when an importer fails to find a symbol.
-// Field names label each one at the call site.
+// Filenames names the four generated output files whose names are otherwise
+// interchangeable positionals. It is a struct rather than four positional
+// strings because the four are same-typed and adjacent: a transposed pair
+// compiled and wrote each file's content under another file's name, which a
+// build only notices when an importer fails to find a symbol. Field names
+// label each one at the call site.
 //
 // An empty field keeps that file's default name, so a caller overriding one
 // name sets one field and leaves the rest zero — the zero Filenames overrides
 // nothing and is exactly equivalent to omitting WithFilenames.
+//
+// Two generated files are named elsewhere, each for its own reason: the client
+// by [WithClientFilename] (a lone string argument cannot be transposed), and
+// the validators module by [WithValidatorsFile] (whose empty value means "do
+// not write it at all", not "use the default name").
 type Filenames struct {
 	// Types names the file holding the generated type declarations.
 	Types string

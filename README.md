@@ -17,7 +17,7 @@ wiregen is a standalone Go library that takes a set of registered Go types and e
 go get github.com/cplieger/wiregen/v3@latest
 ```
 
-Upgrading to v3: the module path is now `…/wiregen/v3`, and `WithFilenames` takes a `Filenames` struct instead of four positional filenames (an empty field keeps that file's default, so the zero `Filenames` overrides nothing). Upgrading from v1 to v2 was: Every per-file string generator returns `(string, error)` instead of panicking on config errors. Non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
+Upgrading to v3: the module path is now `…/wiregen/v3`; `WithFilenames` takes a `Filenames` struct instead of four positional filenames (an empty field keeps that file's default, so the zero `Filenames` overrides nothing); and `Generate`, `GenerateTypes` and `GenerateDecoders` take a leading `context.Context`, so a caller can bound or cancel the package load instead of waiting out a `go list` that hangs. Upgrading from v1 to v2 was: Every per-file string generator returns `(string, error)` instead of panicking on config errors. Non-`omitempty` map fields are now required in the emitted types (matching `encoding/json`), nested collection elements are validated recursively, and the validators module is library-owned generated output (see `WithValidatorsFile`).
 
 ## Usage
 
@@ -26,7 +26,11 @@ Create a registry with `NewRegistry` (functional options configure behavior knob
 ```go
 package main
 
-import "github.com/cplieger/wiregen/v3"
+import (
+	"context"
+
+	"github.com/cplieger/wiregen/v3"
+)
 
 type Status string
 
@@ -52,7 +56,7 @@ func main() {
 		{EventType: "user", TypeName: "User"},
 	}
 
-	if err := r.Generate("./wire"); err != nil {
+	if err := r.Generate(context.Background(), "./wire"); err != nil {
 		panic(err)
 	}
 }
@@ -111,14 +115,16 @@ Discriminated unions are declared in Go **source** with a directive on the seale
 
 One error model across the whole surface: every generator returns an error on a config problem; nothing exported panics.
 
-- `(*Registry).Generate(outDir string) error`: writes all generated files to `outDir`. Each file is written atomically, and a staging failure (e.g. disk full) leaves the directory untouched; the pass is not a multi-file transaction, so a failure partway through can leave a mix of old and new files. `client.gen.ts` is written only when `Endpoints` is non-empty; the validators module only when `WithValidatorsFile` is set. Returns an error and writes nothing when: a required import is missing (`ValidatorsImport` empty; `BusImport` empty while SSE events are registered and `SelfContainedRegistry` is false; `TransportImport` empty while endpoints are registered); a bare type name is registered twice (the engine keys types by bare name, so two same-named types from different packages are rejected); two enums resolve to the same TS type name or const-array name; a registered `WireConst`'s `TSName` sanitizes to an empty TS identifier; the endpoint table is invalid (see "Endpoint table + generated client" below); or a `//wiregen:union` type is registered in `SSEEvents` without a `DiscriminatorMap` entry.
-- `(*Registry).GenerateTypes() (string, error)`: types file content.
-- `(*Registry).GenerateDecoders() (string, error)`: decoders file content. Errors if `ValidatorsImport` is empty.
+- `(*Registry).Generate(ctx context.Context, outDir string) error`: writes all generated files to `outDir`. `ctx` bounds the package load, which runs the `go` command as a subprocess; cancelling it aborts the pass, and the cancellation reason (including a `context.WithCancelCause` cause) is reachable with `errors.Is`. Each file is written atomically, and a staging failure (e.g. disk full) leaves the directory untouched; the pass is not a multi-file transaction, so a failure partway through can leave a mix of old and new files. `client.gen.ts` is written only when `Endpoints` is non-empty; the validators module only when `WithValidatorsFile` is set. Returns an error and writes nothing when: a required import is missing (`ValidatorsImport` empty; `BusImport` empty while SSE events are registered and `SelfContainedRegistry` is false; `TransportImport` empty while endpoints are registered); a bare type name is registered twice (the engine keys types by bare name, so two same-named types from different packages are rejected); two enums resolve to the same TS type name or const-array name; a registered `WireConst`'s `TSName` sanitizes to an empty TS identifier; the endpoint table is invalid (see "Endpoint table + generated client" below); or a `//wiregen:union` type is registered in `SSEEvents` without a `DiscriminatorMap` entry.
+- `(*Registry).GenerateTypes(ctx context.Context) (string, error)`: types file content.
+- `(*Registry).GenerateDecoders(ctx context.Context) (string, error)`: decoders file content. Errors if `ValidatorsImport` is empty.
 - `(*Registry).GenerateRegistry() (string, error)`: registry file content. Errors if `BusImport` is empty while `SelfContainedRegistry` is false, or if `SelfContainedRegistry` is true while `ValidatorsImport` is empty.
 - `(*Registry).GenerateConstants() (string, error)`: constants file content. Errors on an unsanitizable `TSName`.
 - `(*Registry).GenerateClient() (string, error)`: typed-client file content. Errors if `TransportImport` or `ValidatorsImport` is empty or the endpoint table is invalid.
 - `(*Registry).GenerateGoPaths(pkgName string) (string, error)`: a gofmt-formatted Go file of `Path*` constants (one per endpoint). Errors on an invalid endpoint table or package name.
 - `(*Registry).GenerateValidators() string`: the library-owned validators module (the full function contract is listed under "Validators contract" below), under the same DO-NOT-EDIT banner as every other generated file. Content is constant (registry-independent), so this method alone cannot fail. Prefer `WithValidatorsFile` so `Generate` keeps the file current on every run.
+
+The three generators that take a context are exactly the three that read the registered packages from source; the rest render from the registry alone and do no I/O.
 
 ### Types
 

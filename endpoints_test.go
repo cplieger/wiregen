@@ -90,7 +90,7 @@ func TestEndpoints_Validation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newEndpointRegistry()
 			r.Endpoints = tc.eps
-			err := r.Generate(t.TempDir())
+			err := r.Generate(t.Context(), t.TempDir())
 			if err == nil {
 				t.Fatalf("Generate() = nil error, want error containing %q", tc.wantErr)
 			}
@@ -105,7 +105,7 @@ func TestEndpoints_TransportImportRequired(t *testing.T) {
 	r := wiregen.NewRegistry(wiregen.WithValidatorsImport("../validators.js"))
 	r.Types = []wiregen.WireType{wiregen.TypeRef[crossref.Item]()}
 	r.Endpoints = []wiregen.Endpoint{{Name: "getItem", Method: "GET", Path: "/api/item"}}
-	err := r.Generate(t.TempDir())
+	err := r.Generate(t.Context(), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "TransportImport") {
 		t.Errorf("Generate() error = %v, want TransportImport requirement", err)
 	}
@@ -120,7 +120,7 @@ func TestGenerateClient_TypedGet(t *testing.T) {
 		Response: wiregen.TypeRef[crossref.Item](),
 		Doc:      "Fetch one item.",
 	}}
-	out := mustGen(t, r.GenerateClient)
+	out := mustGenNoLoad(t, r.GenerateClient)
 
 	for _, want := range []string{
 		`import { clientRequest, clientRequestRaw } from "../api-client.js";`,
@@ -151,7 +151,7 @@ func TestGenerateClient_ArrayAndRecordShapes(t *testing.T) {
 		},
 		{Name: "names", Method: "GET", Path: "/api/names", RespShape: wiregen.RespStringArray},
 	}
-	out := mustGen(t, r.GenerateClient)
+	out := mustGenNoLoad(t, r.GenerateClient)
 
 	for _, want := range []string{
 		"Promise<Item[] | null>",
@@ -180,7 +180,7 @@ func TestGenerateClient_BodyQueryAndOKFlavor(t *testing.T) {
 			Response: wiregen.TypeRef[crossref.Item](),
 		},
 	}
-	out := mustGen(t, r.GenerateClient)
+	out := mustGenNoLoad(t, r.GenerateClient)
 
 	for _, want := range []string{
 		"export function createItem(body: Item, opts?: ClientOpts): Promise<Item | null> {",
@@ -208,7 +208,7 @@ func TestGenerateClient_RawAndSSEPathConstants(t *testing.T) {
 		{Name: "events", Method: "GET", Path: "/api/events", Kind: wiregen.KindSSE},
 		{Name: "getItem", Method: "GET", Path: "/api/item", Response: wiregen.TypeRef[crossref.Item]()},
 	}
-	out := mustGen(t, r.GenerateClient)
+	out := mustGenNoLoad(t, r.GenerateClient)
 
 	for _, want := range []string{
 		`export const PATH_CONFIG_YAML = "/api/config";`,
@@ -230,7 +230,7 @@ func TestGenerate_WritesClientFile(t *testing.T) {
 		Name: "getItem", Method: "GET", Path: "/api/item",
 		Response: wiregen.TypeRef[crossref.Item](),
 	}}
-	if err := r.Generate(dir); err != nil {
+	if err := r.Generate(t.Context(), dir); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "client.gen.ts"))
@@ -244,7 +244,7 @@ func TestGenerate_WritesClientFile(t *testing.T) {
 	// Without endpoints the file is not written.
 	dir2 := t.TempDir()
 	r2 := newEndpointRegistry()
-	if err := r2.Generate(dir2); err != nil {
+	if err := r2.Generate(t.Context(), dir2); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir2, "client.gen.ts")); !os.IsNotExist(err) {

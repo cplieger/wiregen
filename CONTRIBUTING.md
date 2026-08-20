@@ -23,7 +23,7 @@ A `Registry` is built in two phases (`wiregen.go`):
 
 Types are registered by identity with the compile-time-safe
 `TypeRef[T]()` helper, which captures the `{PkgPath, Name}` pair. Then
-`Generate(outDir)` writes the files with **per-file atomicity**: it
+`Generate(ctx, outDir)` writes the files with **per-file atomicity**: it
 builds each file's content in memory, then stages it to a temp sibling
 and renames it into place (`writeFilesAtomically`). A staging failure
 (e.g. disk full) leaves the output directory untouched, but the rename
@@ -31,6 +31,13 @@ pass is sequential, so the guarantee is per-file, not a multi-file
 transaction. Alternatively the per-file generators
 (`GenerateTypes`, `GenerateDecoders`, `GenerateRegistry`,
 `GenerateConstants`) return their content as `(string, error)`.
+
+The context is not decoration: loading the registered packages runs the
+`go` command as a subprocess, so `Generate`, `GenerateTypes` and
+`GenerateDecoders` take one and the rest do not. That split is the rule
+to keep when adding a generator — a context belongs on the ones that
+read source, and adding one to a generator that renders from the
+registry alone is surface with nothing behind it.
 
 `Generate` and every per-file generator validate their required imports
 up front and return an error on any config problem; nothing exported

@@ -89,7 +89,7 @@ func TestMarshalOracle(t *testing.T) {
 		r.Types = append(r.Types, WireType{PkgPath: st.PkgPath(), Name: st.Name()})
 	}
 	r.init()
-	engine, err := newASTEngine(r)
+	engine, err := newASTEngine(t.Context(), r)
 	if err != nil {
 		t.Fatalf("newASTEngine: %v", err)
 	}

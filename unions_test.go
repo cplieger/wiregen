@@ -175,7 +175,7 @@ func TestUnion_SSERegistryBindsAdapter(t *testing.T) {
 		{EventType: "event", TypeName: "EventData"},
 		{EventType: "scan", TypeName: "ScanEvent"},
 	}
-	reg := mustGen(t, r.GenerateRegistry)
+	reg := mustGenNoLoad(t, r.GenerateRegistry)
 	for _, want := range []string{
 		`registerSSEDecoder("event", decodeEventDataPayload);`,
 		`registerSSEDecoder("scan", decodeScanEvent);`,
@@ -187,7 +187,7 @@ func TestUnion_SSERegistryBindsAdapter(t *testing.T) {
 	}
 
 	r.SelfContainedRegistry = true
-	reg = mustGen(t, r.GenerateRegistry)
+	reg = mustGenNoLoad(t, r.GenerateRegistry)
 	if want := `registry.set("event", decodeEventDataPayload as Decoder<unknown>);`; !strings.Contains(reg, want) {
 		t.Errorf("self-contained registry missing %q, got:\n%s", want, reg)
 	}
@@ -200,7 +200,7 @@ func TestUnion_SSERegistryBindsAdapter(t *testing.T) {
 func TestUnion_SSEWithoutDiscriminatorMapErrors(t *testing.T) {
 	r := unionReg()
 	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "event", TypeName: "EventData"}}
-	err := r.Generate(t.TempDir())
+	err := r.Generate(t.Context(), t.TempDir())
 	if err == nil {
 		t.Fatal("Generate should reject a union SSE event without a DiscriminatorMap")
 	}
@@ -223,7 +223,7 @@ func TestUnion_GenerateEndToEnd(t *testing.T) {
 	}
 	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "event", TypeName: "EventData"}}
 	dir := t.TempDir()
-	if err := r.Generate(dir); err != nil {
+	if err := r.Generate(t.Context(), dir); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	reg, err := os.ReadFile(filepath.Join(dir, "registry.gen.ts"))

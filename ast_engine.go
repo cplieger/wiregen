@@ -349,18 +349,18 @@ func (e *astEngine) resolveTaggedField(f *types.Var, tag string, depth int, pkg 
 		return fieldInfo{}, false
 	}
 
-	parts := strings.Split(jsonTag, ",")
-	wireName := parts[0]
+	// Split once: the name is everything before the first comma, the options
+	// are everything after it. `json:"-,"` therefore names the field "-",
+	// which the bare `json:"-"` skip above has already excluded.
+	wireName, opts, _ := strings.Cut(jsonTag, ",")
+	tagged := wireName != "" // wire name from an explicit json tag (dominantField tiebreak)
 	if wireName == "" {
 		wireName = f.Name()
-	}
-	if wireName == "-" && len(parts) == 1 {
-		return fieldInfo{}, false
 	}
 
 	omitempty := false
 	jsonString := false
-	for _, p := range parts[1:] {
+	for p := range strings.SplitSeq(opts, ",") {
 		switch p {
 		case "omitempty", "omitzero":
 			omitempty = true
@@ -372,7 +372,7 @@ func (e *astEngine) resolveTaggedField(f *types.Var, tag string, depth int, pkg 
 	fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth)
 	// Field doc comment from AST, scoped to this field's declaration.
 	fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
-	fi.Tagged = parts[0] != "" // wire name from an explicit json tag (dominantField tiebreak)
+	fi.Tagged = tagged
 	return fi, true
 }
 
@@ -699,15 +699,15 @@ func parseUnionDirective(cg *ast.CommentGroup) *UnionDef {
 func parseUnionFields(text string) *UnionDef {
 	ud := &UnionDef{}
 	for part := range strings.FieldsSeq(text) {
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
+		key, val, ok := strings.Cut(part, "=")
+		if !ok {
 			continue
 		}
-		switch kv[0] {
+		switch key {
 		case "discriminator":
-			ud.Discriminator = kv[1]
+			ud.Discriminator = val
 		case "variants":
-			for v := range strings.SplitSeq(kv[1], ",") {
+			for v := range strings.SplitSeq(val, ",") {
 				if v != "" {
 					ud.Variants = append(ud.Variants, v)
 				}

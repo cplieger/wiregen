@@ -341,6 +341,50 @@ func TestRawMessageSlice(t *testing.T) {
 	}
 }
 
+// TestTypeMappings_AliasSpellings pins that a mapping key naming an ALIAS
+// works as well as one naming the type the alias resolves to. go/types
+// resolves an alias past its own name, so the resolved spelling is a different
+// string — and the stdlib moves it: json.RawMessage was a named type in
+// encoding/json through Go 1.26 and is an alias for
+// encoding/json/jsontext.Value from 1.27, so a consumer keyed on
+// "encoding/json.RawMessage" silently stopped matching on the toolchain bump
+// and got the built-in `unknown` instead of its own mapping.
+func TestTypeMappings_AliasSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		typ   wiregen.WireType
+		key   string
+		field string
+	}{
+		{"firstPartyAliasName", wiregen.TypeRef[edges.HasTimeAlias](), edgesPkg + ".TimeAlias", "at"},
+		{"firstPartyResolvedName", wiregen.TypeRef[edges.HasTimeAlias](), "time.Time", "at"},
+		{"stdlibAliasName", wiregen.TypeRef[edges.StructWithRawAndTime](), "encoding/json.RawMessage", "payload"},
+		{"stdlibResolvedName", wiregen.TypeRef[edges.StructWithRawAndTime](), "encoding/json/jsontext.Value", "payload"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := edgesReg(tc.typ)
+			r.TypeMappings = map[string]string{tc.key: "MappedShape"}
+			out := mustGen(t, r.GenerateTypes)
+			want := tc.field + ": MappedShape;"
+			if !strings.Contains(out, want) {
+				t.Errorf("TypeMappings[%q] = not applied, want %q in:\n%s", tc.key, want, out)
+			}
+		})
+	}
+}
+
+// TestDecoderMappings_AliasSpelling pins the same for a DecoderMappings-only
+// entry, which reaches the emitter through fieldInfo.GoTypeName rather than
+// through the type-mapping return.
+func TestDecoderMappings_AliasSpelling(t *testing.T) {
+	r := edgesReg(wiregen.TypeRef[edges.HasTimeAlias]())
+	r.DecoderMappings = map[string]string{edgesPkg + ".TimeAlias": "decodeStamp"}
+	out := mustGen(t, r.GenerateDecoders)
+	if !strings.Contains(out, `decodeStamp(o, "at"`) {
+		t.Errorf("DecoderMappings under the alias name = not applied, got:\n%s", out)
+	}
+}
+
 func TestInterfaceSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.InterfaceSlice]())
 	out := mustGen(t, r.GenerateTypes)

@@ -447,7 +447,7 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 	}
 
 	// Check custom type mappings
-	typKey := typeKey(t)
+	typKey := e.r.mappingKey(t)
 	if mapped, ok := e.r.TypeMappings[typKey]; ok {
 		fi.TSType = mapped
 		fi.GoTypeName = typKey
@@ -456,7 +456,15 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 
 	switch ut := t.(type) {
 	case *types.Alias:
-		return e.resolveFieldType(types.Unalias(ut), wireName, fi.Optional, jsonString, depth)
+		fi = e.resolveFieldType(types.Unalias(ut), wireName, fi.Optional, jsonString, depth)
+		// mappingKey chose the alias's own spelling, so a DecoderMappings
+		// entry registered under it must survive the recursion — the emitter
+		// looks that map up by GoTypeName, which the resolved type just
+		// overwrote with its own key.
+		if typKey != typeKey(t) {
+			fi.GoTypeName = typKey
+		}
+		return fi
 	case *types.Named:
 		return e.resolveNamedType(ut, &fi, wireName, jsonString, depth)
 	case *types.Basic:
@@ -781,6 +789,46 @@ func typeKey(t types.Type) string {
 	default:
 		return t.String()
 	}
+}
+
+// mappingKey returns the TypeMappings / DecoderMappings key for t. For
+// anything but an alias that is the resolved importpath.Type, which is what
+// [typeKey] gives.
+//
+// An alias has TWO valid spellings and the consumer's source only ever shows
+// one of them: go/types resolves an alias past its own name, so keying on the
+// resolved type is keying on a string that alias declaration never spelled —
+// and the stdlib moves it. json.RawMessage was a named type in encoding/json
+// through Go 1.26 and is an alias for encoding/json/jsontext.Value from Go
+// 1.27, so a consumer mapping "encoding/json.RawMessage" silently stopped
+// matching on the toolchain bump, with no error and a wrong TS type in the
+// output. Both spellings therefore resolve. The alias spelling wins only when
+// one of the two maps actually holds it, so an unmapped type keeps reporting
+// its resolved key and nothing downstream changes.
+func (r *Registry) mappingKey(t types.Type) string {
+	a, ok := t.(*types.Alias)
+	if !ok {
+		return typeKey(t)
+	}
+	if alias := aliasKey(a); alias != "" {
+		if _, ok := r.TypeMappings[alias]; ok {
+			return alias
+		}
+		if _, ok := r.DecoderMappings[alias]; ok {
+			return alias
+		}
+	}
+	return typeKey(t)
+}
+
+// aliasKey returns the importpath.Type spelling of an alias declaration, or ""
+// for a universe alias (any, byte, rune), which has no package to name.
+func aliasKey(a *types.Alias) string {
+	obj := a.Obj()
+	if obj.Pkg() == nil {
+		return ""
+	}
+	return obj.Pkg().Path() + "." + obj.Name()
 }
 
 func basicToTS(b *types.Basic) string {

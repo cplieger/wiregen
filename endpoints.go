@@ -543,8 +543,7 @@ func (r *Registry) emitClientImports(w *strings.Builder, used *usedIdents, needs
 
 	decoders := slices.Sorted(maps.Keys(used.decoders))
 	if len(decoders) > 0 {
-		mod := strings.TrimSuffix(r.DecodersFilename, ".ts") + ".js"
-		w.WriteString("import { " + strings.Join(decoders, ", ") + " } from \"./" + tsStringLiteral(mod) + "\";\n")
+		w.WriteString("import { " + strings.Join(decoders, ", ") + " } from \"" + moduleSpecifier(r.DecodersFilename) + "\";\n")
 	}
 
 	types := slices.Sorted(maps.Keys(used.types))

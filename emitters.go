@@ -581,7 +581,7 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 	decoderImports := slices.Sorted(maps.Keys(seen))
 
 	if r.SelfContainedRegistry {
-		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n")
+		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"" + moduleSpecifier(r.DecodersFilename) + "\";\n")
 		w.WriteString("import type { Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n\n")
 		w.WriteString("const registry = new Map<string, Decoder<unknown>>();\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
@@ -594,7 +594,7 @@ func (r *Registry) generateRegistry(w *strings.Builder) {
 		w.WriteString("}\n")
 	} else {
 		w.WriteString("import { " + r.RegisterFuncName + " } from \"" + tsStringLiteral(r.BusImport) + "\";\n")
-		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"./decoders.gen.js\";\n\n")
+		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"" + moduleSpecifier(r.DecodersFilename) + "\";\n\n")
 		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
 		for _, e := range r.SSEEvents {
 			w.WriteString("  " + r.RegisterFuncName + "(\"" + tsStringLiteral(e.EventType) + "\", " + r.sseDecoderName(e.TypeName) + ");\n")

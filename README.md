@@ -77,12 +77,12 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 | `WithValidatorsImport(v string)` | **Required.** Import path for the validators module. |
 | `WithBusImport(v string)` | **Required** (unless `WithSelfContainedRegistry(true)`). Import path for the bus module. |
 | `WithTransportImport(v string)` | **Required with `Endpoints`.** Transport-module import path for the client. |
-| `WithTypesImportPath(v string)` | Import path for the types file used in decoders (default: `"./types.gen.js"`). |
+| `WithTypesImportPath(v string)` | Module specifier for the types file used in decoders (default: derived from the types filename, so `"./types.gen.js"` unless `WithFilenames` renames it). Set it explicitly when the types file lives outside `outDir`. |
 | `WithHeaderComment(v string)` | Header comment prepended to every generated file. |
 | `WithRegisterFuncName(v string)` | Function name imported from the bus module (default: `"registerSSEDecoder"`). |
 | `WithRegistryFuncName(v string)` | Exported function name in the registry file (default: `"registerAllSSEDecoders"`). |
 | `WithSelfContainedRegistry(v bool)` | Use a self-contained Map-based registry instead of importing from BusImport. |
-| `WithFilenames(names Filenames)` | Override output filenames via the `Filenames` struct (an empty field keeps that file's default). |
+| `WithFilenames(names Filenames)` | Override output filenames via the `Filenames` struct (an empty field keeps that file's default). The generated files import each other by a specifier derived from these names: the final extension is rewritten the way TypeScript rewrites it (`.mts`→`.mjs`, `.cts`→`.cjs`, anything else→`.js`). |
 | `WithClientFilename(v string)` | Override the generated client filename (default: `"client.gen.ts"`). |
 | `WithValidatorsFile(v string)` | Write the library-owned validators module at this outDir-relative path on every run. |
 

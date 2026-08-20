@@ -35,7 +35,7 @@ transaction. Alternatively the per-file generators
 The context is not decoration: loading the registered packages runs the
 `go` command as a subprocess, so `Generate`, `GenerateTypes` and
 `GenerateDecoders` take one and the rest do not. That split is the rule
-to keep when adding a generator — a context belongs on the ones that
+to keep when adding a generator: a context belongs on the ones that
 read source, and adding one to a generator that renders from the
 registry alone is surface with nothing behind it.
 

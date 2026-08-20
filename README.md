@@ -100,7 +100,7 @@ Payload types are set via exported fields after construction:
 | `EnumTSName` | `map[string]string` | Override the TS name for an enum (Go name → TS name). |
 | `TSNameOverride` | `map[string]string` | Override the TS interface name for a struct (Go name → TS name). |
 | `PathNameOverride` | `map[string]string` | Override the decoder path segment for a type (keyed by TS name). |
-| `TypeMappings` | `map[string]string` | Custom Go type → TS type overrides, keyed by full `importpath.Type` (e.g. `"…/uuid.UUID"` → `"string"`). For a field reached through a type alias, either spelling is a valid key — the alias's own name or the type it resolves to. |
+| `TypeMappings` | `map[string]string` | Custom Go type → TS type overrides, keyed by full `importpath.Type` (e.g. `"…/uuid.UUID"` → `"string"`). For a field reached through a type alias, either spelling is a valid key: the alias's own name or the type it resolves to. |
 | `DecoderMappings` | `map[string]string` | Custom Go type → decoder helper name (full `importpath.Type` key, alias spelling accepted as above). When set, the decoder emits a validation call instead of a bare cast. |
 | `DiscriminatorMap` | `map[string]map[string]string` | Per-union discriminator→variant decoder mapping; emit a union decoder for a sealed-interface union (see below). |
 | `SSEEvents` | `[]SSERegEntry` | Maps SSE event type strings to registered struct names. |
@@ -229,7 +229,7 @@ on these helpers freely). The module exports:
 - **Doc comments** on registered structs and their fields are carried through to `/** … */` JSDoc on the generated interfaces (the AST engine reads them from source).
 - **Unexported fields** are skipped (matching `encoding/json` behavior).
 - **`time.Time`** maps to `string`; **`json.RawMessage`** and `interface{}` map to `unknown`.
-- **A `TypeMappings` / `DecoderMappings` key may name an alias or the type it resolves to.** `go/types` resolves an alias past its own name, so the resolved spelling is a different string from the one the source shows — and the standard library moves it: `json.RawMessage` is a named type through Go 1.26 and an alias for `encoding/json/jsontext.Value` from Go 1.27. Both keys work, so a mapping does not silently stop applying on a toolchain bump.
+- **A `TypeMappings` / `DecoderMappings` key may name an alias or the type it resolves to.** `go/types` resolves an alias past its own name, so the resolved spelling is a different string from the one the source shows, and the standard library moves it: `json.RawMessage` is a named type through Go 1.26 and an alias for `encoding/json/jsontext.Value` from Go 1.27. Both keys work, so a mapping does not silently stop applying on a toolchain bump.
 - **`json.Number`** maps to `number`.
 - **`[]byte`** maps to `string` (JSON encodes `[]byte` as base64).
 - **`omitzero`** (Go 1.24+) is treated the same as `omitempty`: the field becomes optional.

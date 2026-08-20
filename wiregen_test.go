@@ -419,17 +419,20 @@ func TestNewRegistry_WithFilenames(t *testing.T) {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
 		wiregen.WithBusImport("./b.js"),
+		wiregen.WithTransportImport("./t.js"),
+		wiregen.WithClientFilename("my_client.ts"),
 		wiregen.WithFilenames(wiregen.Filenames{Types: "my_types.ts", Decoders: "my_decoders.ts", Registry: "my_registry.ts", Constants: "my_consts.ts"}),
 	)
 	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
 	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "addr", TypeName: "Address"}}
 	r.Constants = []wiregen.WireConst{{TSName: "X", Value: 1}}
+	r.Endpoints = []wiregen.Endpoint{{Name: "getAddr", Method: "GET", Path: "/api/addr", Response: wiregen.TypeRef[basic.Address]()}}
 	dir := t.TempDir()
 	if err := r.Generate(dir); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
-	for _, f := range []string{"my_types.ts", "my_decoders.ts", "my_registry.ts", "my_consts.ts"} {
+	for _, f := range []string{"my_types.ts", "my_decoders.ts", "my_registry.ts", "my_consts.ts", "my_client.ts"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("expected file %s to exist: %v", f, err)
 		}

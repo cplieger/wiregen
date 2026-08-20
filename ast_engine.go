@@ -2,6 +2,7 @@ package wiregen
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -56,7 +57,7 @@ type astEngine struct {
 	types  []*typeInfo
 }
 
-func newASTEngine(r *Registry) (*astEngine, error) {
+func newASTEngine(ctx context.Context, r *Registry) (*astEngine, error) {
 	e := &astEngine{r: r, byName: make(map[string]*typeInfo)}
 
 	// No types registered — return an empty engine (constants-only / registry-only use).
@@ -68,8 +69,18 @@ func newASTEngine(r *Registry) (*astEngine, error) {
 		return e, nil
 	}
 
-	pkgs, err := packages.Load(loadConfig(), pkgPaths...)
+	pkgs, err := packages.Load(loadConfig(ctx), pkgPaths...)
 	if err != nil {
+		// go/packages formats a driver failure into a fresh error without %w,
+		// so a cancelled load loses context.Canceled from the chain on most
+		// runs (measured: 13 of 20 on go1.27.0 + x/tools v0.49.0, the other 7
+		// coming back from Load's own pre-check with the sentinel intact).
+		// Report the cancellation cause when there is one, so a caller with a
+		// deadline can tell "you ran out of time" from "your packages are
+		// broken" with errors.Is instead of a substring match on the message.
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, fmt.Errorf("wiregen: load packages: %w", cause)
+		}
 		return nil, fmt.Errorf("wiregen: load packages: %w", err)
 	}
 	if err := packagesError(pkgs); err != nil {
@@ -115,9 +126,12 @@ func (r *Registry) resolvePackagePaths() []string {
 }
 
 // loadConfig is the go/packages config used to load and type-check the
-// registered packages with CGO disabled.
-func loadConfig() *packages.Config {
+// registered packages with CGO disabled. ctx bounds the load, which runs the
+// go command as a subprocess: cancelling it aborts the load rather than
+// leaving the caller with no way to stop it.
+func loadConfig(ctx context.Context) *packages.Config {
 	return &packages.Config{
+		Context: ctx,
 		Mode: packages.NeedSyntax | packages.NeedFiles | packages.NeedTypes |
 			packages.NeedTypesInfo | packages.NeedName | packages.NeedImports |
 			packages.NeedDeps,

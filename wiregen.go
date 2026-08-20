@@ -5,6 +5,7 @@
 package wiregen
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -405,8 +406,10 @@ func writeFilesAtomically(outDir string, files []genFile) error {
 	return nil
 }
 
-// Generate writes generated TS files to outDir using the AST engine.
-func (r *Registry) Generate(outDir string) error {
+// Generate writes generated TS files to outDir using the AST engine. It loads
+// and type-checks the registered packages, which runs the go command as a
+// subprocess, so ctx bounds the whole pass: cancelling it aborts the load.
+func (r *Registry) Generate(ctx context.Context, outDir string) error {
 	if err := r.init(); err != nil {
 		return err
 	}
@@ -429,7 +432,7 @@ func (r *Registry) Generate(outDir string) error {
 		return fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 
-	engine, err := newASTEngine(r)
+	engine, err := newASTEngine(ctx, r)
 	if err != nil {
 		return err
 	}
@@ -476,11 +479,16 @@ func (r *Registry) buildGenFiles(engine *astEngine) []genFile {
 // GenerateTypes returns the types.gen.ts content as a string. Every per-file
 // string generator returns an error on the same config problems Generate
 // rejects — no exported generator panics.
-func (r *Registry) GenerateTypes() (string, error) {
+//
+// ctx bounds the package load, as in [Registry.Generate]. The three generators
+// that take one ([Registry.Generate], this, and
+// [Registry.GenerateDecoders]) are exactly the three that read the registered
+// packages from source; the rest render from the registry alone and do no I/O.
+func (r *Registry) GenerateTypes(ctx context.Context) (string, error) {
 	if err := r.init(); err != nil {
 		return "", err
 	}
-	engine, err := newASTEngine(r)
+	engine, err := newASTEngine(ctx, r)
 	if err != nil {
 		return "", err
 	}
@@ -489,15 +497,16 @@ func (r *Registry) GenerateTypes() (string, error) {
 	return b.String(), nil
 }
 
-// GenerateDecoders returns the decoders.gen.ts content as a string.
-func (r *Registry) GenerateDecoders() (string, error) {
+// GenerateDecoders returns the decoders.gen.ts content as a string. ctx bounds
+// the package load, as in [Registry.Generate].
+func (r *Registry) GenerateDecoders(ctx context.Context) (string, error) {
 	if err := r.init(); err != nil {
 		return "", err
 	}
 	if r.ValidatorsImport == "" {
 		return "", errors.New("wiregen: ValidatorsImport must be set")
 	}
-	engine, err := newASTEngine(r)
+	engine, err := newASTEngine(ctx, r)
 	if err != nil {
 		return "", err
 	}

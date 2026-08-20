@@ -91,7 +91,7 @@ func TestGenerateValidators_GeneratedBanner(t *testing.T) {
 func TestGenerate_ValidatorsFile(t *testing.T) {
 	dir := t.TempDir()
 	r := validatorsRegistry()
-	if err := r.Generate(dir); err != nil {
+	if err := r.Generate(t.Context(), dir); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	for _, fn := range []string{"validators.ts", "validators.gen.ts"} {
@@ -110,7 +110,7 @@ func TestGenerate_ValidatorsFile(t *testing.T) {
 	}
 	r2 := validatorsRegistry()
 	r2.ValidatorsFilename = "../validators.ts"
-	if err := r2.Generate(wireDir); err != nil {
+	if err := r2.Generate(t.Context(), wireDir); err != nil {
 		t.Fatalf("Generate with ValidatorsFilename: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "validators.ts"))
@@ -129,7 +129,7 @@ func TestGenerate_ValidatorsFile(t *testing.T) {
 
 	// Regeneration overwrites deterministically (library-owned, never a
 	// clobber hazard).
-	if err := r2.Generate(wireDir); err != nil {
+	if err := r2.Generate(t.Context(), wireDir); err != nil {
 		t.Fatalf("second Generate: %v", err)
 	}
 	got2, err := os.ReadFile(filepath.Join(root, "validators.ts"))

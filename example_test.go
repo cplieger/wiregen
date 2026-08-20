@@ -1,6 +1,7 @@
 package wiregen_test
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/cplieger/wiregen/v3"
@@ -18,7 +19,7 @@ func Example() {
 		{EventType: "addr", TypeName: "Address"},
 	}
 
-	ts, err := r.GenerateTypes()
+	ts, err := r.GenerateTypes(context.Background())
 	if err != nil {
 		fmt.Println("generate:", err)
 		return

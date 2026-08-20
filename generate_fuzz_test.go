@@ -40,14 +40,14 @@ func FuzzGenerate(f *testing.F) {
 		// SSE/constants gating) that the string API never exercises, turning a
 		// crash-only target into one that asserts a real invariant.
 		dir := t.TempDir()
-		if err := r.Generate(dir); err != nil {
+		if err := r.Generate(t.Context(), dir); err != nil {
 			return // empty ValidatorsImport/BusImport: the getters error the same way
 		}
 		files := []struct{ name, want string }{
 			{"types.gen.ts", mustGen(t, r.GenerateTypes)},
 			{"decoders.gen.ts", mustGen(t, r.GenerateDecoders)},
-			{"registry.gen.ts", mustGen(t, r.GenerateRegistry)},
-			{"constants.gen.ts", mustGen(t, r.GenerateConstants)},
+			{"registry.gen.ts", mustGenNoLoad(t, r.GenerateRegistry)},
+			{"constants.gen.ts", mustGenNoLoad(t, r.GenerateConstants)},
 		}
 		for _, fc := range files {
 			got, err := os.ReadFile(filepath.Join(dir, fc.name))

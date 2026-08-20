@@ -74,7 +74,7 @@ func TestGenerate_SkipsEmptyFiles(t *testing.T) {
 	r.Types = []wiregen.WireType{wiregen.TypeRef[crossref.Item]()}
 	// No SSEEvents, no Constants.
 
-	if err := r.Generate(dir); err != nil {
+	if err := r.Generate(t.Context(), dir); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	exists := func(name string) bool {

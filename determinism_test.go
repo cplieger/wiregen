@@ -77,12 +77,12 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 	}
 
 	dir1 := t.TempDir()
-	if err := makeReg().Generate(dir1); err != nil {
+	if err := makeReg().Generate(t.Context(), dir1); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 10 {
 		dir2 := t.TempDir()
-		if err := makeReg().Generate(dir2); err != nil {
+		if err := makeReg().Generate(t.Context(), dir2); err != nil {
 			t.Fatal(err)
 		}
 		for _, f := range []string{"types.gen.ts", "decoders.gen.ts", "registry.gen.ts", "constants.gen.ts"} {

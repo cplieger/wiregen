@@ -816,6 +816,56 @@ func TestGenerate_UnknownTypeErrors(t *testing.T) {
 	}
 }
 
+// TestGenerate_RejectsDuplicateTypeNames pins the bare-name keying Generate
+// documents: the engine keys registered types by bare name, so the same type
+// registered twice and two same-named types from different packages are both
+// configuration errors. Each gets its own message, because the remedy differs
+// — drop the duplicate registration, or rename one of the two types.
+func TestGenerate_RejectsDuplicateTypeNames(t *testing.T) {
+	const (
+		crossrefPkg = "github.com/cplieger/wiregen/v3/testdata/crossref"
+		depPkg      = crossrefPkg + "/dep"
+	)
+	cases := []struct {
+		name    string
+		types   []wiregen.WireType
+		wantErr string
+	}{
+		{
+			name: "same_type_registered_twice",
+			types: []wiregen.WireType{
+				{PkgPath: crossrefPkg, Name: "Item"},
+				{PkgPath: crossrefPkg, Name: "Item"},
+			},
+			wantErr: "is registered twice",
+		},
+		{
+			name: "one_name_from_two_packages",
+			types: []wiregen.WireType{
+				{PkgPath: crossrefPkg, Name: "Color"},
+				{PkgPath: depPkg, Name: "Color"},
+			},
+			wantErr: "registered from two packages",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := wiregen.NewRegistry(
+				wiregen.WithValidatorsImport("./v.js"),
+				wiregen.WithBusImport("./b.js"),
+			)
+			r.Types = tc.types
+			err := r.Generate(t.Context(), t.TempDir())
+			if err == nil {
+				t.Fatalf("Generate() = nil error, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Generate() error = %q, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestGenerate_PackageLoadFailureErrors(t *testing.T) {
 	r := wiregen.NewRegistry(
 		wiregen.WithValidatorsImport("./v.js"),

@@ -209,6 +209,31 @@ func TestUnion_SSEWithoutDiscriminatorMapErrors(t *testing.T) {
 	}
 }
 
+// TestUnion_PayloadAdapterNameCollisionErrors pins the second Generate-time
+// union guard: the 1-arg payload adapter is named decode<TSName>Payload, so a
+// registered type whose own TS name ends in "Payload" can claim that exact
+// const name. Emitting both would declare the same TS const twice, so the
+// configuration is rejected instead, naming both types.
+func TestUnion_PayloadAdapterNameCollisionErrors(t *testing.T) {
+	r := unionReg()
+	r.DiscriminatorMap = map[string]map[string]string{
+		"EventData": {"coverage": "CoverageEvent"},
+	}
+	// ScanEvent's decoder becomes decodeEventDataPayload — the same name as the
+	// EventData union's payload adapter.
+	r.TSNameOverride = map[string]string{"ScanEvent": "EventDataPayload"}
+
+	err := r.Generate(t.Context(), t.TempDir())
+	if err == nil {
+		t.Fatal("Generate() = nil error, want a decoder-name collision error")
+	}
+	for _, want := range []string{"decodeEventDataPayload", "EventData", "ScanEvent"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Generate() error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
 // TestUnion_GenerateEndToEnd: the P1 completion shape — a union registered in
 // SSEEvents with a DiscriminatorMap generates all files, and regeneration is
 // byte-identical for the existing consumers' no-union configuration (pinned

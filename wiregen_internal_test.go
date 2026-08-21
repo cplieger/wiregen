@@ -81,6 +81,8 @@ func TestEnumConstName_screamingSnake(t *testing.T) {
 		{"aB", "A_BS"},
 		{"zB", "Z_BS"},
 		{"aBCd", "A_B_CDS"},
+		{"aAb", "A_ABS"}, // word break before 'A', the lower bound of the range
+		{"aZb", "A_ZBS"}, // word break before 'Z', the upper bound
 	}
 	for _, c := range cases {
 		if got := r.enumConstName(c.in); got != c.want {
@@ -224,6 +226,10 @@ func TestIsIdentReferenced(t *testing.T) {
 		{name: "whole_body_match", body: "foo", ident: "foo", want: true},
 		{name: "left_attached", body: "xfoo", ident: "foo", want: false},
 		{name: "right_attached", body: "foox", ident: "foo", want: false},
+		// A mapping expression that wraps the identifier: the character to the
+		// LEFT of the match decides this one, so reading the wrong side of the
+		// match start reports the type as unreferenced and drops its import.
+		{name: "wrapped_in_generic", body: "Array<Item>", ident: "Item", want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

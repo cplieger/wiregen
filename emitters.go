@@ -327,7 +327,6 @@ func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *used
 	w.WriteString("export const " + r.decoderName(ti.Name) + ": (" + disc + ": string, v: unknown) => " + tn + " = (" + disc + ", v) => {\n")
 	w.WriteString("  switch (" + disc + ") {\n")
 
-	// Sorted for determinism.
 	for _, k := range slices.Sorted(maps.Keys(dm)) {
 		variant := dm[k]
 		w.WriteString("    case \"" + tsStringLiteral(k) + "\": return " + r.decoderName(variant) + "(v);\n")
@@ -415,7 +414,6 @@ func (r *Registry) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
 		return "o[\"" + wn + "\"] as unknown"
 	}
 
-	// Primitive
 	helper := primHelperAST(f.TSType, false)
 	used.helper(helper)
 	return helper + "(o, \"" + wn + "\", \"" + path + "\")"
@@ -480,7 +478,6 @@ func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path stri
 		return
 	}
 
-	// Primitive optional
 	helper := primHelperAST(f.TSType, true)
 	used.helper(helper)
 	varName := localVarName(f.WireName)
@@ -512,21 +509,17 @@ func (r *Registry) elemDecoderExpr(elem *fieldInfo, wn, path string, used *usedI
 		return "(v) => v === null ? {} : decodeRecord(v, " + r.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
 	}
 
-	// Check DecoderMappings
 	if expr, ok := r.DecoderMappings[elem.GoTypeName]; ok {
 		used.opaqueExpr(expr)
 		return "(v) => " + expr + "({\"" + wn + "\": v} as Record<string, unknown>, \"" + wn + "\", \"" + path + "\")"
 	}
-	// Check TypeMappings
 	if mapped, ok := r.TypeMappings[elem.GoTypeName]; ok {
 		used.opaqueExpr(mapped)
 		return "(v) => v as " + mapped
 	}
-	// Check if elem is a registered struct
 	if r.typeNames[elem.GoTypeName] {
 		return r.decoderName(elem.GoTypeName)
 	}
-	// Check if elem is an enum (use GoTypeName which is the Go type name)
 	if _, ok := r.Enums[elem.GoTypeName]; ok {
 		constName := r.enumConstName(elem.GoTypeName)
 		used.enumUse(elem.GoTypeName)

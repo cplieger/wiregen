@@ -91,7 +91,6 @@ func newASTEngine(ctx context.Context, r *Registry) (*astEngine, error) {
 	// Auto-discover enum values from source for any enum with empty Values.
 	e.discoverEnumValues(pkgs)
 
-	// Resolve each registered type.
 	for _, wt := range r.Types {
 		ti, err := e.resolveType(wt, allPkgs)
 		if err != nil {
@@ -261,7 +260,6 @@ func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Packag
 		return nil, fmt.Errorf("wiregen: package %q not loaded (needed for type %s)", wt.PkgPath, wt.Name)
 	}
 
-	// Find the type object
 	obj := pkg.Types.Scope().Lookup(wt.Name)
 	if obj == nil {
 		return nil, fmt.Errorf("wiregen: type %s not found in package %s", wt.Name, wt.PkgPath)
@@ -274,15 +272,12 @@ func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Packag
 
 	ti := &typeInfo{Name: wt.Name}
 
-	// Find AST TypeSpec for doc comments + union directives
 	ts := findTypeSpec(pkg, wt.Name)
 	if ts != nil && ts.Doc != nil {
 		ti.Doc = commentToJSDoc(ts.Doc)
-		// Check for //wiregen:union directive
 		ti.Union = parseUnionDirective(ts.Doc)
 	}
 
-	// Resolve struct fields
 	underlying := tn.Type().Underlying()
 	if st, ok := underlying.(*types.Struct); ok {
 		ti.Fields = e.resolveStructFields(st, pkg, allPkgs, 0, nil)
@@ -454,13 +449,11 @@ func (e *astEngine) resolveFieldType(t types.Type, wireName string, omitempty, j
 		Depth:      depth,
 	}
 
-	// Unwrap pointer
 	if ptr, ok := t.(*types.Pointer); ok {
 		fi.Optional = true
 		t = ptr.Elem()
 	}
 
-	// Check custom type mappings
 	typKey := e.r.mappingKey(t)
 	if mapped, ok := e.r.TypeMappings[typKey]; ok {
 		fi.TSType = mapped
@@ -515,14 +508,12 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 	}
 	fullName := pkgPath + "." + name
 
-	// Check custom mapping by full name
 	if mapped, ok := e.r.TypeMappings[fullName]; ok {
 		fi.TSType = mapped
 		fi.GoTypeName = fullName
 		return *fi
 	}
 
-	// time.Time → string
 	if pkgPath == "time" && name == "Time" {
 		fi.TSType = tsString
 		return *fi
@@ -542,13 +533,12 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 		fi.IsRaw = true
 		return *fi
 	}
-	// json.Number -> number (encoding/json marshals it as an unquoted number)
+	// encoding/json marshals json.Number as an unquoted number.
 	if pkgPath == "encoding/json" && name == "Number" {
 		fi.TSType = tsNumber
 		return *fi
 	}
 
-	// Check if it's a registered enum
 	if _, ok := e.r.Enums[name]; ok {
 		fi.TSType = e.r.tsEnumName(name)
 		fi.IsEnum = true
@@ -556,7 +546,6 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 		return *fi
 	}
 
-	// Check if it's a registered struct
 	if e.r.typeNames[name] {
 		fi.TSType = e.r.tsName(name)
 		fi.IsStruct = true
@@ -564,7 +553,6 @@ func (e *astEngine) resolveNamedType(ut *types.Named, fi *fieldInfo, wireName st
 		return *fi
 	}
 
-	// Recurse into underlying type
 	return e.resolveFieldType(ut.Underlying(), wireName, fi.Optional, jsonString, depth)
 }
 

@@ -236,7 +236,6 @@ func NewRegistry(opts ...Option) *Registry {
 func (r *Registry) init() error {
 	r.initMaps()
 	r.initDefaults()
-	// Build typeNames set for cross-referencing in decoders.
 	r.typeNames = make(map[string]bool, len(r.Types))
 	seenPkg := make(map[string]string, len(r.Types))
 	for _, wt := range r.Types {

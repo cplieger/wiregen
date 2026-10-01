@@ -82,6 +82,8 @@ Creates a `*Registry` with behavior configured via functional options. Payload d
 | `WithFilenames(names Filenames)` | Override output filenames via the `Filenames` struct (an empty field keeps that file's default). The generated files import each other by a specifier derived from these names: the final extension is rewritten the way TypeScript rewrites it (`.mts`→`.mjs`, `.cts`→`.cjs`, anything else→`.js`). |
 | `WithClientFilename(v string)` | Override the generated client filename (default: `"client.gen.ts"`). |
 | `WithValidatorsFile(v string)` | Write the library-owned validators module at this outDir-relative path on every run. |
+| `WithArbitrariesFile(v string)` | Write the property-test arbitraries module at this outDir-relative path on every run (empty: not written, so existing consumers are unaffected). |
+| `WithArbitrariesImport(v string)` | Import specifier the arbitraries module takes fast-check from (default: `"fast-check"`). |
 
 ### Registry fields (payload data)
 
@@ -115,9 +117,10 @@ One error model across the whole surface: every generator returns an error on a 
 - `(*Registry).GenerateConstants() (string, error)`: constants file content. Errors on an unsanitizable `TSName`.
 - `(*Registry).GenerateClient() (string, error)`: typed-client file content. Errors if `TransportImport` or `ValidatorsImport` is empty or the endpoint table is invalid.
 - `(*Registry).GenerateGoPaths(pkgName string) (string, error)`: a gofmt-formatted Go file of `Path*` constants (one per endpoint). Errors on an invalid endpoint table or package name.
+- `(*Registry).GenerateArbitraries(ctx context.Context) (string, error)`: arbitraries file content (see "Generated arbitraries" below). `ctx` bounds the package load, as for `Generate`.
 - `(*Registry).GenerateValidators() string`: the library-owned validators module (the full function contract is listed under "Validators contract" below), under the same DO-NOT-EDIT banner as every other generated file. Content is constant (registry-independent), so this method alone cannot fail. Prefer `WithValidatorsFile` so `Generate` keeps the file current on every run.
 
-The three generators that take a context are exactly the three that read the registered packages from source; the rest render from the registry alone and do no I/O.
+The four generators that take a context are exactly the four that read the registered packages from source; the rest render from the registry alone and do no I/O.
 
 ### Types
 
@@ -196,6 +199,58 @@ registrations (the server stays authoritative for permissions).
 **Go path constants.** `GenerateGoPaths` (see "Methods" above) returns a Go
 source file declaring one `Path*` string constant per endpoint, so a CLI in
 the same binary shares the exact path table the TS client was generated from.
+
+## Generated arbitraries
+
+`WithArbitrariesFile("arbitraries.gen.ts")` emits a
+[fast-check](https://fast-check.dev) arbitrary per registered type and per
+registered enum, from the same parsed model the decoders come from, plus a
+lookup table:
+
+```ts
+export const arbUser: fc.Arbitrary<User> = arbModel.User;
+export const arbStatus: fc.Arbitrary<Status> = fc.constantFrom("active", "banned");
+export const ARBITRARY_BY_TYPE: Record<string, fc.Arbitrary<unknown>> = { User: arbUser, ... };
+```
+
+A consumer's property test iterates the table instead of maintaining one
+arbitrary per type by hand, and asserts that every struct row has an exported
+decoder and every exported decoder has a row. Enum rows have no decoder, so the
+assertion skips them. That is what the table is for: a hand-maintained list can fall
+behind the registry silently, while a deleted wire type takes its generated
+arbitrary with it and a new one that no decoder matches fails the consumer's
+own totality assertion.
+
+Field mapping, each case taken from the same field metadata the decoder was
+emitted from, so the generated value satisfies the validator the decoder calls:
+an enum draws from its registered values (what `reqOneOf` accepts); a number is
+finite (`reqNum` rejects `NaN` and `Infinity`, which JSON cannot spell anyway); a
+`[]byte` is a base64 string; a `json.RawMessage` or `interface{}` is any JSON
+value; a slice and a map are bounded collections over the element's arbitrary;
+and a `//wiregen:union` type draws from any of its variants.
+
+Four properties of the emitted module worth knowing:
+
+- **Every type is tied through `fc.letrec`**, so a mutual cycle (`A` holds a `B`
+  that holds an `A`) and a self reference both resolve. A type that can reach
+  itself draws from `fc.oneof` with `maxDepth: 5`, and its first branch is a
+  leaf: recursive optional fields are absent and recursive collections are
+  empty. Every emitted collection and every such `oneof` share one
+  `depthIdentifier`, so nesting counts across the whole model, and at depth 5
+  a recursive type is forced to its leaf.
+- **An optional field is ABSENT, not `undefined`** (`fc.record`'s `requiredKeys`
+  lists the required ones). The two are the same to JSON, and absence is the only
+  one assignable to the emitted `key?: T` under `exactOptionalPropertyTypes`.
+- **A map key is never `"__proto__"`.** `JSON.parse` materializes such a key as
+  an own property while `decodeRecord` assigns `out[k]`, and
+  `out["__proto__"] = v` sets the prototype rather than adding a key. The entry
+  vanishes from the decoded value, so no round trip could hold.
+- **A consumer-mapped type is opaque** unless it maps to a primitive TS type. A
+  `TypeMappings` / `DecoderMappings` entry is a TS expression, so its shape is
+  not in wiregen's model: the field gets an arbitrary JSON value and a cast,
+  which is the same trust the emitted `o[k] as T` decoder already extends. A
+  consumer whose mapped decoder validates its input should write that type's
+  arbitrary by hand rather than take the generated one.
 
 ## Validators contract
 

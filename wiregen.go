@@ -70,6 +70,8 @@ type options struct {
 	constantsFilename     string
 	clientFilename        string
 	validatorsFilename    string
+	arbitrariesFilename   string
+	arbitrariesImport     string
 	selfContainedRegistry bool
 }
 
@@ -84,6 +86,23 @@ func WithValidatorsImport(v string) Option { return func(o *options) { o.validat
 // (the default) writes nothing — but the module is wiregen-owned either way:
 // scaffold it via GenerateValidators() and never hand-edit it.
 func WithValidatorsFile(v string) Option { return func(o *options) { o.validatorsFilename = v } }
+
+// WithArbitrariesFile makes Generate write the property-test arbitraries module
+// at the given path relative to outDir: one fast-check arbitrary per registered
+// type and per registered enum, plus the ARBITRARY_BY_TYPE lookup table. Empty
+// (the default) writes nothing, so a consumer that does not ask for the file
+// gets exactly the files it got before.
+//
+// The arbitraries are emitted from the same parsed model as the decoders, so a
+// consumer's property test iterates the table instead of hand-maintaining one
+// arbitrary per type — and a wire type that is deleted takes its arbitrary with
+// it rather than orphaning one.
+func WithArbitrariesFile(v string) Option { return func(o *options) { o.arbitrariesFilename = v } }
+
+// WithArbitrariesImport sets the import specifier the arbitraries module takes
+// fast-check from (default "fast-check"). The emitted file imports it as the
+// default export, `fc`.
+func WithArbitrariesImport(v string) Option { return func(o *options) { o.arbitrariesImport = v } }
 
 // WithTransportImport sets the import path for the transport module the
 // generated client calls into. Required when endpoints are registered. The
@@ -187,6 +206,8 @@ type Registry struct {
 	DecodersFilename      string
 	ClientFilename        string
 	ValidatorsFilename    string
+	ArbitrariesFilename   string
+	ArbitrariesImport     string
 	BusImport             string
 	TransportImport       string
 	TypesImportPath       string
@@ -223,6 +244,8 @@ func NewRegistry(opts ...Option) *Registry {
 		ConstantsFilename:     o.constantsFilename,
 		ClientFilename:        o.clientFilename,
 		ValidatorsFilename:    o.validatorsFilename,
+		ArbitrariesFilename:   o.arbitrariesFilename,
+		ArbitrariesImport:     o.arbitrariesImport,
 		SelfContainedRegistry: o.selfContainedRegistry,
 	}
 }
@@ -346,6 +369,9 @@ func (r *Registry) initDefaults() {
 	}
 	if r.ClientFilename == "" {
 		r.ClientFilename = "client.gen.ts"
+	}
+	if r.ArbitrariesImport == "" {
+		r.ArbitrariesImport = "fast-check"
 	}
 	if r.TypesImportPath == "" {
 		// Derived from TypesFilename (defaulted just above), so renaming the
@@ -472,6 +498,11 @@ func (r *Registry) buildGenFiles(engine *astEngine) []genFile {
 		r.generateValidators(&b)
 		files = append(files, genFile{r.ValidatorsFilename, b.String()})
 	}
+	if r.ArbitrariesFilename != "" {
+		var b strings.Builder
+		r.generateArbitraries(&b, engine)
+		files = append(files, genFile{r.ArbitrariesFilename, b.String()})
+	}
 	return files
 }
 
@@ -479,9 +510,9 @@ func (r *Registry) buildGenFiles(engine *astEngine) []genFile {
 // string generator returns an error on the same config problems Generate
 // rejects — no exported generator panics.
 //
-// ctx bounds the package load, as in [Registry.Generate]. The three generators
-// that take one ([Registry.Generate], this, and
-// [Registry.GenerateDecoders]) are exactly the three that read the registered
+// ctx bounds the package load, as in [Registry.Generate]. The four generators
+// that take one ([Registry.Generate], this, [Registry.GenerateDecoders] and
+// [Registry.GenerateArbitraries]) are exactly the four that read the registered
 // packages from source; the rest render from the registry alone and do no I/O.
 func (r *Registry) GenerateTypes(ctx context.Context) (string, error) {
 	if err := r.init(); err != nil {
@@ -511,6 +542,23 @@ func (r *Registry) GenerateDecoders(ctx context.Context) (string, error) {
 	}
 	var b strings.Builder
 	r.generateDecoders(&b, engine)
+	return b.String(), nil
+}
+
+// GenerateArbitraries returns the arbitraries module's content as a string: one
+// fast-check arbitrary per registered type and per registered enum, plus the
+// ARBITRARY_BY_TYPE table. ctx bounds the package load, as in
+// [Registry.Generate].
+func (r *Registry) GenerateArbitraries(ctx context.Context) (string, error) {
+	if err := r.init(); err != nil {
+		return "", err
+	}
+	engine, err := newASTEngine(ctx, r)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	r.generateArbitraries(&b, engine)
 	return b.String(), nil
 }
 

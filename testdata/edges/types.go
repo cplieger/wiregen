@@ -26,6 +26,18 @@ type SelfSlice struct {
 	Children []SelfSlice `json:"children,omitempty"`
 }
 
+// SelfSliceRequired references itself via a slice that is always on the wire.
+type SelfSliceRequired struct {
+	Name     string              `json:"name"`
+	Children []SelfSliceRequired `json:"children"`
+}
+
+// SelfMapRequired references itself via a map that is always on the wire.
+type SelfMapRequired struct {
+	Name     string                     `json:"name"`
+	Children map[string]SelfMapRequired `json:"children"`
+}
+
 // SelfMap references itself via a map.
 type SelfMap struct {
 	Name     string             `json:"name"`

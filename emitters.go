@@ -559,6 +559,440 @@ func primHelperAST(tsType string, optional bool) string {
 	}
 }
 
+// --- arbitraries generation ---
+
+// The emitted collections all carry one shared depth identifier, so fast-check
+// counts nesting across the whole model instead of per arbitrary instance: a
+// self-referential slice inside a self-referential map is one recursion to the
+// generator, which is what keeps a cyclic schema's generated values small.
+const (
+	arbDepthIdentifier   = "wiregen"
+	arbArrayConstraints  = `{ maxLength: 2, size: "small", depthIdentifier: "` + arbDepthIdentifier + `" }`
+	arbRecordConstraints = `{ maxKeys: 2, size: "small", depthIdentifier: "` + arbDepthIdentifier + `" }`
+	// The shared identifier only biases fast-check toward shallow values, so a
+	// recursive type terminates with high probability rather than always, and a
+	// deep draw overflows the stack. At this depth on the shared counter a
+	// recursive type's oneof is forced to its non-recursive first branch.
+	arbRecursionCap = `{ maxDepth: 5, depthIdentifier: "` + arbDepthIdentifier + `" }`
+	arbJSON         = "fc.jsonValue()"
+	arbString       = "fc.string()"
+	arbBool         = "fc.boolean()"
+	arbBase64       = "fc.base64String()"
+	arbFiniteNumber = "fc.double({ noNaN: true, noDefaultInfinity: true })"
+)
+
+// arbMapKeyDecl declares the key arbitrary every emitted dictionary uses.
+const arbMapKeyDecl = `// A map key is never the string "__proto__". JSON.parse materializes such a key
+// as an own property, while the generated decodeRecord assigns out[k], and
+// out["__proto__"] sets the prototype instead of adding a key — so the entry
+// would vanish from the decoded value and no round trip could hold.
+const arbMapKey: fc.Arbitrary<string> = fc.string().filter((k) => k !== "__proto__");
+
+`
+
+// arbUses records what the emitted arbitraries referenced, so a declaration is
+// written only when something uses it (an unused const is a lint error in the
+// consumer, and the consumer cannot edit generated output).
+type arbUses struct{ mapKey bool }
+
+// arbName is the exported arbitrary's name for a TS type or enum name.
+func arbName(tsName string) string { return "arb" + tsName }
+
+// generateArbitraries writes the arbitraries file: one fast-check arbitrary per
+// registered enum and per registered type, plus the ARBITRARY_BY_TYPE lookup
+// table a consumer's property test iterates. Callers have already rejected a
+// missing ArbitrariesImport by defaulting it in initDefaults.
+func (r *Registry) generateArbitraries(w *strings.Builder, engine *astEngine) {
+	var body strings.Builder
+	used := &arbUses{}
+	r.emitEnumArbitraries(&body)
+	r.emitTypeArbitraries(&body, engine, used)
+	r.emitArbitraryTable(&body, engine)
+
+	w.WriteString(r.HeaderComment)
+	w.WriteString("import fc from \"" + tsStringLiteral(r.ArbitrariesImport) + "\";\n")
+	r.emitArbTypeImports(w, engine)
+	if used.mapKey {
+		w.WriteString(arbMapKeyDecl)
+	}
+	w.WriteString(body.String())
+}
+
+// emitArbTypeImports writes the `import type { … }` line naming every type and
+// enum the emitted arbitraries annotate, sorted.
+func (r *Registry) emitArbTypeImports(w *strings.Builder, engine *astEngine) {
+	names := map[string]bool{}
+	for _, ti := range engine.types {
+		names[r.tsName(ti.Name)] = true
+	}
+	for name := range r.Enums {
+		names[r.tsEnumName(name)] = true
+	}
+	sorted := slices.Sorted(maps.Keys(names))
+	if len(sorted) > 0 {
+		w.WriteString("import type { " + strings.Join(sorted, ", ") + " } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
+	}
+	w.WriteString("\n")
+}
+
+// emitEnumArbitraries writes one fc.constantFrom per registered enum, drawing
+// exactly the registered value set — the vocabulary the decoder's reqOneOf
+// membership check accepts, from the same EnumDef the check was emitted from.
+func (r *Registry) emitEnumArbitraries(w *strings.Builder) {
+	emitted := 0
+	seen := map[string]bool{}
+	for _, name := range enumNamesSlice(r.Enums) {
+		tn := r.tsEnumName(name)
+		if seen[tn] {
+			continue
+		}
+		seen[tn] = true
+		emitted++
+		def := r.Enums[name]
+		w.WriteString("export const " + arbName(tn) + ": fc.Arbitrary<" + tn + "> = ")
+		if len(def.Values) == 0 {
+			// A zero-value enum's TS type is `never` (see emitEnumTypes), so no
+			// value inhabits it. fc.constantFrom() with no argument throws at
+			// module evaluation, which would break every import of this file, so
+			// emit a constant that can be drawn and never decoded — the decoder's
+			// empty membership check rejects it, which is the honest outcome.
+			w.WriteString("fc.constant(undefined as unknown as never);\n")
+			continue
+		}
+		w.WriteString("fc.constantFrom(")
+		for i, v := range def.Values {
+			if i > 0 {
+				w.WriteString(", ")
+			}
+			w.WriteString("\"" + tsStringLiteral(v) + "\"")
+		}
+		w.WriteString(");\n")
+	}
+	if emitted > 0 {
+		w.WriteString("\n")
+	}
+}
+
+// emitTypeArbitraries writes the struct and union arbitraries inside one
+// fc.letrec, then one exported const per type.
+func (r *Registry) emitTypeArbitraries(w *strings.Builder, engine *astEngine, used *arbUses) {
+	if len(engine.types) == 0 {
+		return
+	}
+	// fc.letrec ties every reference by name and resolves it when a value is
+	// generated, so a mutual cycle (A holds a B, B holds an A) and a self
+	// reference both work. A plain const referring to a const declared later
+	// would be a temporal-dead-zone ReferenceError at module evaluation, which
+	// no consumer's typecheck reports.
+	w.WriteString("const arbModel = fc.letrec<{\n")
+	for _, ti := range engine.types {
+		tn := r.tsName(ti.Name)
+		w.WriteString("  " + tn + ": " + tn + ";\n")
+	}
+	w.WriteString("}>((tie) => ({\n")
+	reaches := r.arbReachability(engine)
+	for _, ti := range engine.types {
+		w.WriteString("  " + r.tsName(ti.Name) + ": " + r.arbForType(ti, used, reaches) + ",\n")
+	}
+	w.WriteString("}));\n\n")
+	for _, ti := range engine.types {
+		tn := r.tsName(ti.Name)
+		w.WriteString("export const " + arbName(tn) + ": fc.Arbitrary<" + tn + "> = arbModel." + tn + ";\n")
+	}
+	w.WriteString("\n")
+}
+
+// arbForType renders one registered type's arbitrary: a oneof over the variants
+// for a //wiregen:union type, otherwise a record over the fields. A struct that
+// can reach itself is a depth-capped oneof of a leaf record and the full one.
+func (r *Registry) arbForType(ti *typeInfo, used *arbUses, reaches map[string]map[string]bool) string {
+	if ti.Union != nil {
+		return r.arbForUnion(ti)
+	}
+	if len(ti.Fields) == 0 {
+		return "fc.record({})"
+	}
+	if !reaches[ti.Name][ti.Name] {
+		return r.arbRecord(ti, used, "  ", nil)
+	}
+	recursive := func(f *fieldInfo) bool {
+		for _, ref := range r.arbRefs(f) {
+			if ref == ti.Name || reaches[ref][ti.Name] {
+				return true
+			}
+		}
+		return false
+	}
+	return "fc.oneof(\n    " + arbRecursionCap + ",\n    " +
+		r.arbRecord(ti, used, "    ", recursive) + ",\n    " +
+		r.arbRecord(ti, used, "    ", nil) + ",\n  )"
+}
+
+// arbRecord renders a struct's fc.record at the given closing indent. With a
+// non-nil recursive predicate it renders the LEAF record a depth cap forces:
+// a recursive optional field is absent and a recursive collection is empty,
+// while a recursive required struct field keeps its tie, because that type is
+// capped too and Go admits no unbroken chain of required struct fields.
+func (r *Registry) arbRecord(ti *typeInfo, used *arbUses, indent string, recursive func(*fieldInfo) bool) string {
+	var b strings.Builder
+	var required []string
+	b.WriteString("fc.record(\n" + indent + "  {\n")
+	for i := range ti.Fields {
+		f := &ti.Fields[i]
+		leaf := recursive != nil && recursive(f)
+		if leaf && f.Optional {
+			continue
+		}
+		if !f.Optional {
+			required = append(required, "\""+tsStringLiteral(f.WireName)+"\"")
+		}
+		expr, note := r.arbFieldExpr(f, used)
+		switch {
+		case leaf && f.IsSlice:
+			expr, note = "fc.constant<"+f.TSType+">([])", ""
+		case leaf && f.IsMap:
+			expr, note = "fc.constant<"+f.TSType+">({})", ""
+		}
+		if note != "" {
+			b.WriteString(indent + "    // " + note + "\n")
+		}
+		b.WriteString(indent + "    " + tsPropName(f.WireName) + ": " + expr + ",\n")
+	}
+	b.WriteString(indent + "  },\n")
+	// An optional key is ABSENT from the generated record rather than present
+	// and undefined: the two are the same to JSON, and absence is the only one
+	// assignable to the emitted `key?: T` under exactOptionalPropertyTypes.
+	b.WriteString(indent + "  { requiredKeys: [" + strings.Join(required, ", ") + "] },\n" + indent + ")")
+	return b.String()
+}
+
+// arbRefs lists the registered types a field's arbitrary ties to, following
+// arbFieldExpr's and arbElemExpr's routing exactly.
+func (r *Registry) arbRefs(f *fieldInfo) []string {
+	if f == nil || f.JSONString || f.IsRaw || f.IsIface || f.IsBytes {
+		return nil
+	}
+	if f.IsSlice || f.IsMap {
+		return r.arbElemRefs(f.Elem)
+	}
+	if r.isMapped(f.GoTypeName) || f.IsEnum {
+		return nil
+	}
+	if f.IsStruct && r.typeNames[f.GoTypeName] {
+		return []string{f.GoTypeName}
+	}
+	return nil
+}
+
+// arbElemRefs is arbRefs for a collection element, which arbElemExpr routes
+// before the raw and interface checks.
+func (r *Registry) arbElemRefs(elem *fieldInfo) []string {
+	switch {
+	case elem == nil:
+		return nil
+	case elem.IsSlice || elem.IsMap:
+		return r.arbElemRefs(elem.Elem)
+	case r.isMapped(elem.GoTypeName):
+		return nil
+	case r.typeNames[elem.GoTypeName]:
+		return []string{elem.GoTypeName}
+	}
+	return nil
+}
+
+// arbReachability answers, for every registered type, which registered types
+// its arbitrary can reach through ties, unions included.
+func (r *Registry) arbReachability(engine *astEngine) map[string]map[string]bool {
+	edges := r.arbEdges(engine)
+	reaches := make(map[string]map[string]bool, len(edges))
+	for _, ti := range engine.types {
+		reaches[ti.Name] = reachableFrom(edges[ti.Name], edges)
+	}
+	return reaches
+}
+
+// arbEdges maps each registered type to the types its arbitrary ties to.
+func (r *Registry) arbEdges(engine *astEngine) map[string][]string {
+	edges := make(map[string][]string, len(engine.types))
+	for _, ti := range engine.types {
+		if ti.Union != nil {
+			for _, v := range ti.Union.Variants {
+				if r.typeNames[v] {
+					edges[ti.Name] = append(edges[ti.Name], v)
+				}
+			}
+			continue
+		}
+		for i := range ti.Fields {
+			edges[ti.Name] = append(edges[ti.Name], r.arbRefs(&ti.Fields[i])...)
+		}
+	}
+	return edges
+}
+
+// reachableFrom is the set of nodes reachable from start over edges.
+func reachableFrom(start []string, edges map[string][]string) map[string]bool {
+	seen := map[string]bool{}
+	stack := slices.Clone(start)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		stack = append(stack, edges[n]...)
+	}
+	return seen
+}
+
+// arbForUnion renders a //wiregen:union type's arbitrary: a draw from any
+// variant, which is exactly the emitted `export type X = A | B | C`. The
+// discriminator key is NOT injected — the variant interfaces do not declare it,
+// and a variant decoder drops an undeclared key, so a value carrying one could
+// not round-trip.
+func (r *Registry) arbForUnion(ti *typeInfo) string {
+	var variants []string
+	for _, v := range ti.Union.Variants {
+		if r.typeNames[v] {
+			variants = append(variants, "tie(\""+r.tsName(v)+"\")")
+		}
+	}
+	if len(variants) == 0 {
+		return "fc.constant(undefined as unknown as " + r.tsName(ti.Name) + ")"
+	}
+	return "fc.oneof(" + strings.Join(variants, ", ") + ")"
+}
+
+// arbFieldExpr returns the arbitrary expression for one struct field, and a note
+// to emit above it when the expression is opaque. The routing order mirrors
+// reqExpr's exactly, because the arbitrary has to satisfy the validator that
+// field's decoder emitted.
+func (r *Registry) arbFieldExpr(f *fieldInfo, used *arbUses) (expr, note string) {
+	if f.JSONString {
+		return arbString, ""
+	}
+	if f.IsRaw || f.IsIface {
+		return arbJSON, ""
+	}
+	if f.IsBytes {
+		return arbBase64, ""
+	}
+	if f.IsSlice {
+		return "fc.array(" + r.arbElemExpr(f.Elem, used) + ", " + arbArrayConstraints + ")", ""
+	}
+	if f.IsMap {
+		used.mapKey = true
+		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(f.Elem, used) + ", " + arbRecordConstraints + ")", ""
+	}
+	if r.isMapped(f.GoTypeName) {
+		return r.arbMappedExpr(f.GoTypeName, f.TSType)
+	}
+	if f.IsEnum {
+		if _, ok := r.Enums[f.GoTypeName]; ok {
+			return arbName(r.tsEnumName(f.GoTypeName)), ""
+		}
+		return arbString, ""
+	}
+	if f.IsStruct && r.typeNames[f.GoTypeName] {
+		return "tie(\"" + r.tsName(f.GoTypeName) + "\")", ""
+	}
+	if f.TSType == tsUnknown {
+		return arbJSON, ""
+	}
+	return arbPrim(f.TSType), ""
+}
+
+// arbElemExpr returns the arbitrary for a slice element or map value, recursing
+// through nested collections the way elemDecoderExpr does.
+func (r *Registry) arbElemExpr(elem *fieldInfo, used *arbUses) string {
+	if elem == nil {
+		return arbJSON
+	}
+	if elem.IsSlice {
+		return "fc.array(" + r.arbElemExpr(elem.Elem, used) + ", " + arbArrayConstraints + ")"
+	}
+	if elem.IsMap {
+		used.mapKey = true
+		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(elem.Elem, used) + ", " + arbRecordConstraints + ")"
+	}
+	if r.isMapped(elem.GoTypeName) {
+		expr, _ := r.arbMappedExpr(elem.GoTypeName, elem.TSType)
+		return expr
+	}
+	if r.typeNames[elem.GoTypeName] {
+		return "tie(\"" + r.tsName(elem.GoTypeName) + "\")"
+	}
+	if _, ok := r.Enums[elem.GoTypeName]; ok {
+		return arbName(r.tsEnumName(elem.GoTypeName))
+	}
+	if elem.IsBytes {
+		return arbBase64
+	}
+	switch elem.TSType {
+	case tsString, tsNumber, tsBoolean:
+		return arbPrim(elem.TSType)
+	}
+	return arbJSON
+}
+
+// isMapped reports whether the consumer supplied a type or decoder mapping for
+// goTypeName, which is the one case wiregen has no shape for.
+func (r *Registry) isMapped(goTypeName string) bool {
+	if _, ok := r.DecoderMappings[goTypeName]; ok {
+		return true
+	}
+	_, ok := r.TypeMappings[goTypeName]
+	return ok
+}
+
+// arbMappedExpr renders a consumer-mapped type's arbitrary. A mapping to a
+// primitive TS type is honoured exactly; anything else is opaque, because the
+// mapping's shape lives in the consumer's TS expression and not in wiregen's
+// parsed model — so the value is an arbitrary JSON one and the annotation is a
+// cast, the same trust the emitted `o[k] as T` decoder already extends.
+func (r *Registry) arbMappedExpr(goTypeName, tsType string) (expr, note string) {
+	switch tsType {
+	case tsString, tsNumber, tsBoolean:
+		return arbPrim(tsType), ""
+	}
+	return "fc.jsonValue().filter((v) => v !== null) as unknown as fc.Arbitrary<" + tsType + ">",
+		"opaque: " + goTypeName + " is consumer-mapped, so its shape is not in wiregen's model"
+}
+
+// arbPrim is the arbitrary for a primitive TS type, mirroring primHelperAST's
+// choice of validator: a number is finite, because reqNum rejects NaN and
+// Infinity (and JSON has no spelling for either).
+func arbPrim(tsType string) string {
+	switch tsType {
+	case tsString:
+		return arbString
+	case tsBoolean:
+		return arbBool
+	default:
+		return arbFiniteNumber
+	}
+}
+
+// emitArbitraryTable writes the ARBITRARY_BY_TYPE lookup table, keyed by TS
+// name and total over the registry: every registered type and enum has a row,
+// and a row exists for nothing else. A consumer asserts that set against its
+// exported decoders, which is what makes an orphaned arbitrary impossible.
+func (r *Registry) emitArbitraryTable(w *strings.Builder, engine *astEngine) {
+	rows := map[string]bool{}
+	for _, ti := range engine.types {
+		rows[r.tsName(ti.Name)] = true
+	}
+	for name := range r.Enums {
+		rows[r.tsEnumName(name)] = true
+	}
+	w.WriteString("export const ARBITRARY_BY_TYPE: Record<string, fc.Arbitrary<unknown>> = {\n")
+	for _, name := range slices.Sorted(maps.Keys(rows)) {
+		w.WriteString("  " + name + ": " + arbName(name) + ",\n")
+	}
+	w.WriteString("};\n")
+}
+
 // --- registry generation ---
 
 // generateRegistry writes the registry file. Callers (Generate,

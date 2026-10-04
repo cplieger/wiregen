@@ -63,7 +63,7 @@ These are load-bearing; changes that break them are bugs, not features.
 
 - **encoding/json fidelity.** The AST field walk mirrors `encoding/json`
   exactly; the full rule set is enumerated in the README's
-  "[Behavior notes](README.md#behavior-notes)". When extending the walk,
+  "[Field rules](docs/type-mapping.md#field-rules)". When extending the walk,
   match `encoding/json`'s behavior rather than reimplementing it.
 - **Generated identifiers are valid TypeScript.** Every consumer- or
   source-derived string that lands in an identifier position (the name

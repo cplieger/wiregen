@@ -257,7 +257,7 @@ func dedupEnumValues(vps []valPos) []string {
 func (e *astEngine) resolveType(wt WireType, allPkgs map[string]*packages.Package) (*typeInfo, error) {
 	pkg, ok := allPkgs[wt.PkgPath]
 	if !ok {
-		return nil, fmt.Errorf("wiregen: package %q not loaded (needed for type %s)", wt.PkgPath, wt.Name)
+		return nil, fmt.Errorf("wiregen: package %q not loaded, and type %s needs it", wt.PkgPath, wt.Name)
 	}
 
 	obj := pkg.Types.Scope().Lookup(wt.Name)

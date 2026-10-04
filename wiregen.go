@@ -266,7 +266,7 @@ func (r *Registry) init() error {
 			if prev == wt.PkgPath {
 				return fmt.Errorf("wiregen: type %s.%s is registered twice", wt.PkgPath, wt.Name)
 			}
-			return fmt.Errorf("wiregen: type name %q is registered from two packages (%s and %s); wiregen keys types by bare name — rename one type or register only one", wt.Name, prev, wt.PkgPath)
+			return fmt.Errorf("wiregen: type name %q is registered from two packages, %s and %s. wiregen keys types by bare name, so rename one type or register only one", wt.Name, prev, wt.PkgPath)
 		}
 		seenPkg[wt.Name] = wt.PkgPath
 		r.typeNames[wt.Name] = true
@@ -284,12 +284,12 @@ func (r *Registry) validateEnums() error {
 	for _, name := range enumNamesSlice(r.Enums) {
 		tn := r.tsEnumName(name)
 		if prev, ok := seenTS[tn]; ok {
-			return fmt.Errorf("wiregen: enums %q and %q both emit TS type name %q; set EnumTSName to disambiguate", prev, name, tn)
+			return fmt.Errorf("wiregen: enums %q and %q both emit TS type name %q. Set EnumTSName to disambiguate", prev, name, tn)
 		}
 		seenTS[tn] = name
 		cn := r.enumConstName(name)
 		if prev, ok := seenConst[cn]; ok {
-			return fmt.Errorf("wiregen: enums %q and %q both emit const array name %q; set EnumTSName to disambiguate", prev, name, cn)
+			return fmt.Errorf("wiregen: enums %q and %q both emit const array name %q. Set EnumTSName to disambiguate", prev, name, cn)
 		}
 		seenConst[cn] = name
 	}
@@ -599,7 +599,7 @@ func (r *Registry) GenerateConstants() (string, error) {
 func (r *Registry) validateConstants() error {
 	for _, c := range r.Constants {
 		if sanitizeTSIdent(c.TSName) == "" {
-			return fmt.Errorf("wiregen: constant %q (value %d) has no TS-identifier-safe characters in its TSName", c.TSName, c.Value)
+			return fmt.Errorf("wiregen: constant %q with value %d has no TS-identifier-safe characters in its TSName", c.TSName, c.Value)
 		}
 	}
 	return nil
@@ -688,7 +688,7 @@ func (r *Registry) validateUnionSSE(engine *astEngine) error {
 	for _, e := range r.SSEEvents {
 		ti := engine.byName[e.TypeName]
 		if ti != nil && ti.Union != nil && r.DiscriminatorMap[e.TypeName] == nil {
-			return fmt.Errorf("wiregen: SSE event %q registers union type %s without a DiscriminatorMap entry (required for its runtime decoder)", e.EventType, e.TypeName)
+			return fmt.Errorf("wiregen: SSE event %q registers union type %s without a DiscriminatorMap entry, which its runtime decoder requires", e.EventType, e.TypeName)
 		}
 	}
 	for _, ti := range engine.types {
@@ -698,7 +698,7 @@ func (r *Registry) validateUnionSSE(engine *astEngine) error {
 		adapter := r.unionPayloadDecoderName(ti.Name)
 		for _, wt := range r.Types {
 			if wt.Name != ti.Name && r.decoderName(wt.Name) == adapter {
-				return fmt.Errorf("wiregen: union %s payload adapter %s collides with the decoder of registered type %s; rename one type", ti.Name, adapter, wt.Name)
+				return fmt.Errorf("wiregen: union %s payload adapter %s collides with the decoder of registered type %s. Rename one type", ti.Name, adapter, wt.Name)
 			}
 		}
 	}

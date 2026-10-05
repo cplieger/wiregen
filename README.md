@@ -150,7 +150,7 @@ A configuration error writes nothing. Each file is replaced in one step, but the
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the correctness rules and the golden-file workflow.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 

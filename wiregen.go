@@ -107,7 +107,7 @@ func WithArbitrariesImport(v string) Option { return func(o *options) { o.arbitr
 // WithTransportImport sets the import path for the transport module the
 // generated client calls into. Required when endpoints are registered. The
 // module must export clientRequest, clientRequestOK, clientRequestRaw, and
-// the ApiResult type — see the client-transport contract in the README.
+// the ApiResult type, as docs/http-client.md "Client-transport module" specifies.
 func WithTransportImport(v string) Option { return func(o *options) { o.transportImport = v } }
 
 // WithClientFilename overrides the generated client filename

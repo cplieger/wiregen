@@ -187,8 +187,7 @@ type Embedded struct {
 	// fallback is the enclosing type's package; it does NOT declare Tag.
 	fallback := &packages.Package{PkgPath: "example.com/outer"}
 
-	e := &astEngine{}
-	got := e.findFieldDoc(field, fallback, allPkgs)
+	got := findFieldDoc(field, fallback, allPkgs)
 	want := "/** FieldComment documents Tag. */\n"
 	if got != want {
 		t.Errorf("findFieldDoc = %q, want %q (doc must come from the declaring package, not the fallback)", got, want)

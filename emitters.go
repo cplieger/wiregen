@@ -886,7 +886,7 @@ func (r *Registry) arbFieldExpr(f *fieldInfo, used *arbUses) (expr, note string)
 		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(f.Elem, used) + ", " + arbRecordConstraints + ")", ""
 	}
 	if r.isMapped(f.GoTypeName) {
-		return r.arbMappedExpr(f.GoTypeName, f.TSType)
+		return arbMappedExpr(f.GoTypeName, f.TSType)
 	}
 	if f.IsEnum {
 		if _, ok := r.Enums[f.GoTypeName]; ok {
@@ -917,7 +917,7 @@ func (r *Registry) arbElemExpr(elem *fieldInfo, used *arbUses) string {
 		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(elem.Elem, used) + ", " + arbRecordConstraints + ")"
 	}
 	if r.isMapped(elem.GoTypeName) {
-		expr, _ := r.arbMappedExpr(elem.GoTypeName, elem.TSType)
+		expr, _ := arbMappedExpr(elem.GoTypeName, elem.TSType)
 		return expr
 	}
 	if r.typeNames[elem.GoTypeName] {
@@ -951,7 +951,7 @@ func (r *Registry) isMapped(goTypeName string) bool {
 // mapping's shape lives in the consumer's TS expression and not in wiregen's
 // parsed model — so the value is an arbitrary JSON one and the annotation is a
 // cast, the same trust the emitted `o[k] as T` decoder already extends.
-func (r *Registry) arbMappedExpr(goTypeName, tsType string) (expr, note string) {
+func arbMappedExpr(goTypeName, tsType string) (expr, note string) {
 	switch tsType {
 	case tsString, tsNumber, tsBoolean:
 		return arbPrim(tsType), ""

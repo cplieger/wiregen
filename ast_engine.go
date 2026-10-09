@@ -23,7 +23,6 @@ type typeInfo struct {
 	Name   string
 	Doc    string
 	Fields []fieldInfo
-	IsEnum bool
 }
 
 // fieldInfo holds one struct field's metadata.
@@ -380,7 +379,7 @@ func (e *astEngine) resolveTaggedField(f *types.Var, tag string, depth int, pkg 
 
 	fi := e.resolveFieldType(f.Type(), wireName, omitempty, jsonString, depth)
 	// Field doc comment from AST, scoped to this field's declaration.
-	fi.Doc = e.findFieldDoc(f, pkg, allPkgs)
+	fi.Doc = findFieldDoc(f, pkg, allPkgs)
 	fi.Tagged = tagged
 	return fi, true
 }
@@ -594,7 +593,7 @@ func (e *astEngine) resolveMapType(ut *types.Map, fi *fieldInfo) fieldInfo {
 	return *fi
 }
 
-func (e *astEngine) findFieldDoc(fieldObj *types.Var, fallback *packages.Package, allPkgs map[string]*packages.Package) string {
+func findFieldDoc(fieldObj *types.Var, fallback *packages.Package, allPkgs map[string]*packages.Package) string {
 	pos := fieldObj.Pos()
 	if !pos.IsValid() {
 		return ""

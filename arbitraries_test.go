@@ -255,6 +255,86 @@ func TestGenerateArbitraries_RecursionIsHardBounded(t *testing.T) {
 	}
 }
 
+// TestGenerateArbitraries_NestedCollections: every nested level carries the
+// shared size bound, and a dictionary nested inside an array still draws its
+// keys from arbMapKey, so the module declares it even with no top-level map.
+func TestGenerateArbitraries_NestedCollections(t *testing.T) {
+	const (
+		arr  = `{ maxLength: 2, size: "small", depthIdentifier: "wiregen" }`
+		dict = `{ maxKeys: 2, size: "small", depthIdentifier: "wiregen" }`
+	)
+	cases := []struct {
+		typ  wiregen.WireType
+		name string
+		want string
+	}{
+		{
+			name: "SliceOfSlice",
+			typ:  wiregen.TypeRef[edges.SliceOfSlice](),
+			want: "matrix: fc.array(fc.array(fc.string(), " + arr + "), " + arr + "),",
+		},
+		{
+			name: "SliceOfMap",
+			typ:  wiregen.TypeRef[edges.SliceOfMap](),
+			want: "items: fc.array(fc.dictionary(arbMapKey, fc.string(), " + dict + "), " + arr + "),",
+		},
+		{
+			name: "MapOfMap",
+			typ:  wiregen.TypeRef[edges.MapOfMap](),
+			want: "nested: fc.dictionary(arbMapKey, fc.dictionary(arbMapKey, fc.double({ noNaN: true, noDefaultInfinity: true }), " + dict + "), " + dict + "),",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := mustGen(t, edgesReg(tc.typ).GenerateArbitraries)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("%s arbitrary missing %q\n--- output ---\n%s", tc.name, tc.want, out)
+			}
+			if strings.Contains(out, "arbMapKey") && !strings.Contains(out, "const arbMapKey: fc.Arbitrary<string>") {
+				t.Errorf("%s arbitraries reference arbMapKey without declaring it:\n%s", tc.name, out)
+			}
+		})
+	}
+}
+
+// TestGenerateArbitraries_RecursionThroughNestedSliceIsCapped: a type reaching
+// itself through a slice of slices is depth-capped like a direct self slice,
+// and its leaf branch holds the collection empty.
+func TestGenerateArbitraries_RecursionThroughNestedSliceIsCapped(t *testing.T) {
+	out := mustGen(t, edgesReg(wiregen.TypeRef[edges.SelfNestedSlice]()).GenerateArbitraries)
+	entry := letrecEntry(t, out, "SelfNestedSlice")
+	if !strings.HasPrefix(entry, "fc.oneof(\n    { maxDepth: 5, ") {
+		t.Fatalf("SelfNestedSlice arbitrary is not a depth-capped oneof; got:\n%s", entry)
+	}
+	branches := strings.Split(entry, "\n    fc.record(")
+	if len(branches) != 3 {
+		t.Fatalf("SelfNestedSlice oneof has %d record branches, want 2 (leaf, full); got:\n%s", len(branches)-1, entry)
+	}
+	if want := "grid: fc.constant<SelfNestedSlice[][]>([])"; !strings.Contains(branches[1], want) {
+		t.Errorf("SelfNestedSlice leaf branch missing %q; leaf:\n%s", want, branches[1])
+	}
+	if want := `grid: fc.array(fc.array(tie("SelfNestedSlice"), `; !strings.Contains(branches[2], want) {
+		t.Errorf("SelfNestedSlice full branch missing %q; full:\n%s", want, branches[2])
+	}
+}
+
+// TestGenerateArbitraries_UnionWithoutRegisteredVariants: a union none of whose
+// variants is registered has no value to draw, so its arbitrary is a typed
+// constant rather than an fc.oneof() with no arguments, which fast-check
+// rejects when the module is evaluated.
+func TestGenerateArbitraries_UnionWithoutRegisteredVariants(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/unions"}
+	r.Types = []wiregen.WireType{{PkgPath: "github.com/cplieger/wiregen/v3/testdata/unions", Name: "EventData"}}
+	out := mustGen(t, r.GenerateArbitraries)
+	if got, want := letrecEntry(t, out, "EventData"), "fc.constant(undefined as unknown as EventData),"; got != want {
+		t.Errorf("EventData arbitrary = %q, want %q", got, want)
+	}
+}
+
 // TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed: the option is additive, so a
 // consumer that does not name the file gets exactly the files it got before.
 func TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed(t *testing.T) {

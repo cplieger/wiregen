@@ -38,6 +38,12 @@ type SelfMapRequired struct {
 	Children map[string]SelfMapRequired `json:"children"`
 }
 
+// SelfNestedSlice references itself through a nested slice.
+type SelfNestedSlice struct {
+	Name string              `json:"name"`
+	Grid [][]SelfNestedSlice `json:"grid"`
+}
+
 // SelfMap references itself via a map.
 type SelfMap struct {
 	Name     string             `json:"name"`

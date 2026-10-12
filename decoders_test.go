@@ -132,6 +132,11 @@ func TestDecoders_UncoveredEmitBranches(t *testing.T) {
 			types: []wiregen.WireType{wiregen.TypeRef[edges.SliceOfSlice]()},
 			wants: []string{`decodeArray(o["matrix"], (v) => v === null ? [] : decodeArray(v, (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.slice_of_slice.matrix"), "$.slice_of_slice.matrix")`},
 		},
+		{
+			name:  "map element inside a slice accepts null as the empty record",
+			types: []wiregen.WireType{wiregen.TypeRef[edges.SliceOfMap]()},
+			wants: []string{`decodeArray(o["items"], (v) => v === null ? {} : decodeRecord(v, (v) => { if (typeof v !== "string") throw new TypeError("expected string"); return v as string; }, "$.slice_of_map.items"), "$.slice_of_map.items")`},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,5 +183,72 @@ func TestDecoders_NullHandling(t *testing.T) {
 	dec = mustGen(t, edgesReg(wiregen.TypeRef[edges.AllOptional]()).GenerateDecoders)
 	if want := `const a = o["a"] === null ? undefined : optStr(o, "a", "$.all_optional");`; !strings.Contains(dec, want) {
 		t.Errorf("optional primitive decoder missing null ternary %q\n--- output ---\n%s", want, dec)
+	}
+}
+
+// TestDecoders_OptionalPassthroughKeepsNull: an optional json.RawMessage or
+// interface{} field passes a present null through as data, like its required
+// form, while every other optional field reads null as absent.
+func TestDecoders_OptionalPassthroughKeepsNull(t *testing.T) {
+	r := wiregen.NewRegistry(
+		wiregen.WithValidatorsImport("./v.js"),
+		wiregen.WithBusImport("./b.js"),
+	)
+	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
+	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasOptionalPassthrough]()}
+	dec := mustGen(t, r.GenerateDecoders)
+	for _, want := range []string{
+		`if (o["raw"] !== undefined) out.raw = o["raw"] as unknown;`,
+		`if (o["iface"] !== undefined) out.iface = o["iface"] as unknown;`,
+	} {
+		if !strings.Contains(dec, want) {
+			t.Errorf("HasOptionalPassthrough decoder missing %q\n--- output ---\n%s", want, dec)
+		}
+	}
+	if strings.Contains(dec, "!== null") {
+		t.Errorf("optional pass-through fields must keep null as data, got:\n%s", dec)
+	}
+}
+
+// TestDecoders_OptionalMappedField: an optional field of a consumer-mapped
+// type reads a present null as absent, then decodes through the consumer's
+// decoder when one is mapped and casts to the mapped TS type when not.
+func TestDecoders_OptionalMappedField(t *testing.T) {
+	const customID = "github.com/cplieger/wiregen/v3/testdata/basic.CustomID"
+	cases := []struct {
+		decoderMappings map[string]string
+		name            string
+		wants           []string
+	}{
+		{
+			name:            "decoder mapping",
+			decoderMappings: map[string]string{customID: "decodeCustomID"},
+			wants: []string{
+				`const id = o["id"] === null ? undefined : decodeCustomID(o, "id", "$.has_optional_mapped");`,
+				`if (id !== undefined) out.id = id;`,
+			},
+		},
+		{
+			name:  "type mapping only",
+			wants: []string{`if (o["id"] !== undefined && o["id"] !== null) out.id = o["id"] as CustomRef;`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := wiregen.NewRegistry(
+				wiregen.WithValidatorsImport("./v.js"),
+				wiregen.WithBusImport("./b.js"),
+			)
+			r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
+			r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasOptionalMapped]()}
+			r.TypeMappings = map[string]string{customID: "CustomRef"}
+			r.DecoderMappings = tc.decoderMappings
+			dec := mustGen(t, r.GenerateDecoders)
+			for _, want := range tc.wants {
+				if !strings.Contains(dec, want) {
+					t.Errorf("HasOptionalMapped decoder missing %q\n--- output ---\n%s", want, dec)
+				}
+			}
+		})
 	}
 }

@@ -103,6 +103,17 @@ type WithEmbedding struct {
 	Name string `json:"name"`
 }
 
+// HasOptionalPassthrough has optional raw and interface fields.
+type HasOptionalPassthrough struct {
+	Raw   json.RawMessage `json:"raw,omitempty"`
+	Iface interface{}     `json:"iface,omitempty"`
+}
+
+// HasOptionalMapped has an optional field of a custom-mapped type.
+type HasOptionalMapped struct {
+	ID *CustomID `json:"id,omitempty"`
+}
+
 // HasMappedSlice has a slice whose element type carries a custom mapping.
 type HasMappedSlice struct {
 	IDs  []CustomID `json:"ids"`

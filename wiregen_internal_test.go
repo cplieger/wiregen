@@ -12,10 +12,9 @@ import (
 // --- shared internal test helpers ---
 
 const (
-	basicPkg    = "github.com/cplieger/wiregen/v3/testdata/basic"
-	edgesPkg    = "github.com/cplieger/wiregen/v3/testdata/edges"
-	unionsPkg   = "github.com/cplieger/wiregen/v3/testdata/unions"
-	crossrefPkg = "github.com/cplieger/wiregen/v3/testdata/crossref"
+	basicPkg    = "github.com/cplieger/wiregen/v4/testdata/basic"
+	edgesPkg    = "github.com/cplieger/wiregen/v4/testdata/edges"
+	crossrefPkg = "github.com/cplieger/wiregen/v4/testdata/crossref"
 )
 
 // checkContains and checkNotContains are the generated-output checks in
@@ -42,12 +41,12 @@ func checkNotContains(t *testing.T, label, out, bad string) {
 // nil-reflect.TypeOf fallback path.
 type markerIface interface{ marker() }
 
-// TestPathName_snakeCase pins (*Registry).pathName's CamelCase/acronym →
+// TestPathName_snakeCase pins (*generator).pathName's CamelCase/acronym →
 // snake_case conversion used for decoder path segments. Each row isolates one
 // case-boundary or acronym-boundary decision so the exact snake-casing is
 // observable.
 func TestPathName_snakeCase(t *testing.T) {
-	r := &Registry{}
+	r := mustGenerator(t, &Registry{})
 	cases := []struct{ in, want string }{
 		{"Z", "z"},                    // lone uppercase is lowercased
 		{"aB", "a_b"},                 // lower→upper inserts underscore
@@ -70,11 +69,11 @@ func TestPathName_snakeCase(t *testing.T) {
 	}
 }
 
-// TestEnumConstName_screamingSnake pins (*Registry).enumConstName, which
+// TestEnumConstName_screamingSnake pins (*generator).enumConstName, which
 // converts a Go enum type name into the SCREAMING_SNAKE const identifier (with
 // a trailing "S") used for the runtime values array.
 func TestEnumConstName_screamingSnake(t *testing.T) {
-	r := &Registry{}
+	r := mustGenerator(t, &Registry{})
 	cases := []struct{ in, want string }{
 		{"Ab", "ABS"},
 		{"Zb", "ZBS"},
@@ -106,64 +105,6 @@ func TestSanitizeTSIdent_charClass(t *testing.T) {
 	for _, c := range cases {
 		if got := sanitizeTSIdent(c.in); got != c.want {
 			t.Errorf("sanitizeTSIdent(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// TestSanitizeVarName pins sanitizeVarName: it camelCases underscore-separated
-// names, strips non-identifier characters (keeping a digit only after a kept
-// char), and suffixes "Val" onto names that collide with a TS reserved word or
-// a generated local so the generated decoder never shadows them.
-func TestSanitizeVarName(t *testing.T) {
-	cases := []struct{ in, want string }{
-		// char-class boundaries
-		{"A", "A"},
-		{"Z", "Z"},
-		{"a0", "a0"},
-		{"a9", "a9"},
-		{"a9b", "a9b"},
-		{"123bad", "bad"}, // leading digits dropped
-		{"", ""},
-		// camelCase of underscore-separated names
-		{"hello_world", "helloWorld"},
-		{"a_b_c", "aBC"},
-		// reserved word / generated-local collisions get a "Val" suffix
-		{"o", "oVal"},
-		{"out", "outVal"},
-		{"v", "vVal"},
-		{"private", "privateVal"},
-		{"public", "publicVal"},
-		{"protected", "protectedVal"},
-		{"class", "classVal"},
-		{"return", "returnVal"},
-		{"delete", "deleteVal"},
-		{"default", "defaultVal"},
-		{"export", "exportVal"},
-		{"import", "importVal"},
-		{"new", "newVal"},
-		{"this", "thisVal"},
-		// full ES keyword set (previously missing from the escape list)
-		{"const", "constVal"},
-		{"let", "letVal"},
-		{"var", "varVal"},
-		{"function", "functionVal"},
-		{"typeof", "typeofVal"},
-		{"in", "inVal"},
-		{"case", "caseVal"},
-		// module-level / strict-mode restricted names
-		{"await", "awaitVal"},
-		{"eval", "evalVal"},
-		{"arguments", "argumentsVal"},
-		// referenced globals whose shadowing breaks emitted code
-		{"undefined", "undefinedVal"},
-		{"TypeError", "TypeErrorVal"},
-		// camelCasing runs before the reserved check: the joined form is not
-		// reserved, so no suffix
-		{"type_error", "typeError"},
-	}
-	for _, c := range cases {
-		if got := sanitizeVarName(c.in); got != c.want {
-			t.Errorf("sanitizeVarName(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
@@ -240,6 +181,14 @@ func TestIsIdentReferenced(t *testing.T) {
 	}
 }
 
+// TestTypeOf_nil pins that TypeOf answers a nil type with the zero WireType,
+// which Generate refuses as an error, rather than panicking.
+func TestTypeOf_nil(t *testing.T) {
+	if got := TypeOf(nil); got != (WireType{}) {
+		t.Errorf("TypeOf(nil) = %+v, want the zero WireType", got)
+	}
+}
+
 // TestTypeRef_interfaceFallback pins TypeRef's nil-reflect.TypeOf guard: an
 // interface type parameter has a nil zero value, so reflect.TypeOf returns nil
 // and the code must fall back to reflect.TypeFor[T]() to resolve the name.
@@ -280,27 +229,6 @@ func TestIsValidTSIdent(t *testing.T) {
 	for _, c := range cases {
 		if got := isValidTSIdent(c.in); got != c.want {
 			t.Errorf("isValidTSIdent(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
-// TestEmitUnionDecoder_sanitizesDiscriminator pins that a non-identifier or
-// reserved-word //wiregen:union discriminator is sanitized to a valid TS
-// identifier for the decoder's parameter name. The case labels use the
-// already-escaped DiscriminatorMap keys, so only the local param binding is
-// affected; a value that sanitizes to empty falls back to "disc". A valid
-// identifier discriminator (see TestUnion_DecoderAllVariants) is unchanged.
-func TestEmitUnionDecoder_sanitizesDiscriminator(t *testing.T) {
-	r := &Registry{DiscriminatorMap: map[string]map[string]string{"E": {"a": "A"}}}
-	for _, c := range []struct{ disc, want string }{
-		{"event_type", "eventType"}, // underscore -> camelCase
-		{"default", "defaultVal"},   // reserved word -> suffixed
-		{"@@@", "disc"},             // sanitizes to empty -> fallback
-	} {
-		var w strings.Builder
-		r.emitUnionDecoder(&w, &typeInfo{Name: "E", Union: &UnionDef{Discriminator: c.disc}}, newUsedIdents())
-		if out := w.String(); !strings.Contains(out, "("+c.want+": string, v: unknown)") {
-			t.Errorf("discriminator %q: expected sanitized param %q in signature, got:\n%s", c.disc, c.want, out)
 		}
 	}
 }

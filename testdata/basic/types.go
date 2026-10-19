@@ -9,6 +9,22 @@ import (
 // Status is a typed string for user status.
 type Status string
 
+const (
+	StatusActive   Status = "active"
+	StatusInactive Status = "inactive"
+	StatusBanned   Status = "banned"
+)
+
+// Priority is a string enum no struct field uses.
+type Priority string
+
+const (
+	PriorityLow      Priority = "low"
+	PriorityMedium   Priority = "medium"
+	PriorityHigh     Priority = "high"
+	PriorityCritical Priority = "critical"
+)
+
 // Address represents a physical mailing address.
 type Address struct {
 	Street string `json:"street"`
@@ -58,7 +74,7 @@ type HasJSONString struct {
 	Name  string `json:"name"`
 }
 
-// CustomID is a custom type for testing TypeMappings.
+// CustomID is a custom type for testing Mappings.
 type CustomID struct{ Value string }
 
 // HasCustomMapped uses a custom-mapped type.
@@ -85,12 +101,6 @@ type HasMap struct {
 	Name string            `json:"name"`
 }
 
-// HasInterface has an interface field.
-type HasInterface struct {
-	Payload interface{} `json:"payload"`
-	Name    string      `json:"name"`
-}
-
 // Base is embedded by other types for testing.
 type Base struct {
 	ID        int       `json:"id"`
@@ -103,10 +113,9 @@ type WithEmbedding struct {
 	Name string `json:"name"`
 }
 
-// HasOptionalPassthrough has optional raw and interface fields.
+// HasOptionalPassthrough has an optional raw field.
 type HasOptionalPassthrough struct {
-	Raw   json.RawMessage `json:"raw,omitempty"`
-	Iface interface{}     `json:"iface,omitempty"`
+	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
 // HasOptionalMapped has an optional field of a custom-mapped type.

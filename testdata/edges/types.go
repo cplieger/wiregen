@@ -123,7 +123,6 @@ type AllKinds struct {
 	Map     map[string]string `json:"map"`
 	Bytes   []byte            `json:"bytes"`
 	Raw     json.RawMessage   `json:"raw"`
-	Iface   interface{}       `json:"iface"`
 }
 
 // SliceOfSlice is a [][]string field.
@@ -227,8 +226,14 @@ type NestedOptPtr struct {
 	Inner *Inner `json:"inner,omitempty"`
 }
 
-// OptionalEnum tests optional enum fields.
+// MyEnum is the enum of HasOptEnum's optional field.
 type MyEnum string
+
+const (
+	MyEnumA MyEnum = "a"
+	MyEnumB MyEnum = "b"
+	MyEnumC MyEnum = "c"
+)
 
 type HasOptEnum struct {
 	Status *MyEnum `json:"status,omitempty"`

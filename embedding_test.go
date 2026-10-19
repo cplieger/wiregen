@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v3"
-	"github.com/cplieger/wiregen/v3/testdata/basic"
-	"github.com/cplieger/wiregen/v3/testdata/edges"
+	"github.com/cplieger/wiregen/v4"
+	"github.com/cplieger/wiregen/v4/testdata/basic"
+	"github.com/cplieger/wiregen/v4/testdata/edges"
 )
 
 // Tests for embedded-struct flattening and encoding/json field-promotion
@@ -30,13 +30,11 @@ func ifaceBody(out, name string) string {
 }
 
 func TestEmbeddedStructFlatten(t *testing.T) {
-	r := wiregen.NewRegistry(
+	r := newTestRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.WithEmbedding]()}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "id: number;") {
 		t.Errorf("embedded Base.ID should be flattened, got:\n%s", out)
 	}
@@ -50,7 +48,7 @@ func TestEmbeddedStructFlatten(t *testing.T) {
 
 func TestDeepEmbedding(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DeepA](), wiregen.TypeRef[edges.DeepB](), wiregen.TypeRef[edges.DeepC]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface DeepA") {
 		t.Errorf("missing DeepA, got:\n%s", out)
 	}
@@ -58,7 +56,7 @@ func TestDeepEmbedding(t *testing.T) {
 
 func TestPromotionAmbiguityOmitsBoth(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.Ambiguous](), wiregen.TypeRef[edges.AmbigLeft](), wiregen.TypeRef[edges.AmbigRight]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// "name" is promoted from both embeddings at equal depth → dropped; the
 	// non-ambiguous direct "id" remains.
 	if body := ifaceBody(out, "Ambiguous"); strings.Contains(body, "name") {
@@ -77,7 +75,7 @@ func TestPromotionAmbiguityOmitsBoth(t *testing.T) {
 // walk the base once (first path wins) and wrongly emit its field.
 func TestDiamondEmbedOmitsSharedBase(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.Diamond]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if body := ifaceBody(out, "Diamond"); strings.Contains(body, "base_field") {
 		t.Errorf("diamond-shared base field should be omitted as ambiguous, got:\n%s", out)
 	}
@@ -88,7 +86,7 @@ func TestDiamondEmbedOmitsSharedBase(t *testing.T) {
 
 func TestDirectFieldWins(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DirectWins](), wiregen.TypeRef[edges.EmbBase]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// Direct field at depth 0 wins over embedded at depth 1.
 	if !strings.Contains(out, "name: string") {
 		t.Errorf("direct field should win, got:\n%s", out)
@@ -97,7 +95,7 @@ func TestDirectFieldWins(t *testing.T) {
 
 func TestEmbedFieldOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.EmbedOverride](), wiregen.TypeRef[edges.EmbedBase2]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	body := ifaceBody(out, "EmbedOverride")
 	// Direct x:int wins over embedded x:string — exactly one "x" field, typed number.
 	if got := strings.Count(body, "x:"); got != 1 {
@@ -110,7 +108,7 @@ func TestEmbedFieldOverride(t *testing.T) {
 
 func TestTwoLevelEmbedDepth(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.Level1](), wiregen.TypeRef[edges.Level2](), wiregen.TypeRef[edges.Level3]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	body := ifaceBody(out, "Level1")
 	// Level2.Name (depth 1) wins over Level3.Name (depth 2); email is direct.
 	if !strings.Contains(body, "name:") {
@@ -123,34 +121,36 @@ func TestTwoLevelEmbedDepth(t *testing.T) {
 
 func TestEmbeddedPointerOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasEmbedPtr]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	body := ifaceBody(out, "HasEmbedPtr")
-	// Direct Name wins over embedded *EmbedPtrBase.Name; id comes from the embed.
+	// Direct Name wins over embedded *EmbedPtrBase.Name; id comes from the
+	// embed, and is optional because encoding/json skips a nil embed's fields.
 	if !strings.Contains(body, "name: string;") {
 		t.Errorf("direct field should be present, got:\n%s", out)
 	}
-	if !strings.Contains(body, "id: number;") {
-		t.Errorf("embedded ptr field 'id' should be present, got:\n%s", out)
+	if !strings.Contains(body, "id?: number;") {
+		t.Errorf("embedded ptr field 'id' should be optional, got:\n%s", out)
 	}
 	if got := strings.Count(body, "name:"); got != 1 {
 		t.Errorf("expected exactly 1 'name' field, got %d:\n%s", got, out)
 	}
 }
 
-func TestPrivateEmbedSkipped(t *testing.T) {
+// encoding/json promotes the exported fields of an unexported embedded
+// struct, so they cross the wire and the interface must declare them.
+func TestPrivateEmbedPromoted(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasPrivateEmbed]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "name: string;") {
-		t.Errorf("exported field should be present, got:\n%s", out)
-	}
-	if strings.Contains(out, "secret") {
-		t.Errorf("unexported embedded struct's fields should NOT appear, got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	for _, want := range []string{"name: string;", "secret: string;"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("types missing %q, got:\n%s", want, out)
+		}
 	}
 }
 
 func TestOnlyUnexportedFields(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.OnlyUnexported]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface OnlyUnexported") {
 		t.Errorf("should still produce interface, got:\n%s", out)
 	}
@@ -158,7 +158,7 @@ func TestOnlyUnexportedFields(t *testing.T) {
 
 func TestEmbeddedFieldWithDashTag(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasEmbedWithDash]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "visible: string;") {
 		t.Errorf("visible field from embed should be present, got:\n%s", out)
 	}
@@ -176,8 +176,8 @@ func TestEmbeddedFieldWithDashTag(t *testing.T) {
 // NOT dropped as ambiguous), regardless of embed declaration order.
 func TestPromotion_TaggedDominatesUntaggedAtEqualDepth(t *testing.T) {
 	for _, name := range []string{"TaggedDominatesA", "TaggedDominatesB"} {
-		r := edgesReg(wiregen.WireType{PkgPath: "github.com/cplieger/wiregen/v3/testdata/edges", Name: name})
-		body := ifaceBody(mustGen(t, r.GenerateTypes), name)
+		r := edgesReg(wiregen.WireType{PkgPath: "github.com/cplieger/wiregen/v4/testdata/edges", Name: name})
+		body := ifaceBody(mustGen(t, r.typesFile), name)
 		if got := strings.Count(body, "Name:"); got != 1 {
 			t.Errorf("%s: tagged field should win at equal depth (exactly 1 Name), got %d:\n%s", name, got, body)
 		}
@@ -189,7 +189,7 @@ func TestPromotion_TaggedDominatesUntaggedAtEqualDepth(t *testing.T) {
 // field (encoding/json does not flatten a tagged embed).
 func TestTaggedEmbedBecomesNamedField(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TaggedEmbed](), wiregen.TypeRef[edges.Inner]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "meta: Inner;") {
 		t.Errorf("tagged embed should become named nested field meta: Inner, got:\n%s", out)
 	}
@@ -199,7 +199,7 @@ func TestTaggedEmbedBecomesNamedField(t *testing.T) {
 // embed tagged json:"-" is dropped entirely (not flattened).
 func TestDashEmbedSkipped(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DashEmbed]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "kept: string;") {
 		t.Errorf("direct kept field should be present, got:\n%s", out)
 	}

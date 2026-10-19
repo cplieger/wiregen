@@ -7,33 +7,27 @@ import (
 	"testing"
 )
 
-// White-box tests for writeFilesAtomically's error and cleanup paths in
-// wiregen.go (the happy path is covered via Generate and FuzzGenerate).
-
-// TestWriteFilesAtomically_renameFailureCleansTemps pins the atomicity
-// contract: when a rename into place fails mid-sequence, writeFilesAtomically
-// returns the wrapped error AND removes the staged temp so no half-written
-// wire/ directory and no leaked *.tmp sibling is left behind. A target name
-// that is an existing directory makes os.Rename fail deterministically.
-func TestWriteFilesAtomically_renameFailureCleansTemps(t *testing.T) {
-	outDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(outDir, "types.gen.ts"), 0o755); err != nil {
+// A target that cannot be replaced fails the pass naming the file, leaves
+// the earlier staged files unpublished and no temp behind.
+func TestWriteFiles_unreplaceableTargetCleansTemps(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "types.gen.ts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := writeFilesAtomically(outDir, []genFile{{name: "types.gen.ts", content: "x"}})
-	if err == nil {
-		t.Fatal("expected rename error when the target name is an existing directory")
+	err := writeFiles(t.Context(), dir, []genFile{
+		{role: "decoders", name: "decoders.gen.ts", content: "x", ts: true},
+		{role: "types", name: "types.gen.ts", content: "x", ts: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "types.gen.ts") {
+		t.Fatalf("writeFiles = %v, want an error naming types.gen.ts", err)
 	}
-	if !strings.Contains(err.Error(), "write types.gen.ts") {
-		t.Errorf("error not wrapped with target name: %v", err)
-	}
-	entries, rerr := os.ReadDir(outDir)
+	entries, rerr := os.ReadDir(dir)
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
-			t.Errorf("staged temp not cleaned up on error path: %s", e.Name())
+		if e.Name() != "types.gen.ts" {
+			t.Errorf("%s left behind by a failed pass", e.Name())
 		}
 	}
 }

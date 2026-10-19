@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v3"
-	"github.com/cplieger/wiregen/v3/testdata/basic"
-	"github.com/cplieger/wiregen/v3/testdata/edges"
+	"github.com/cplieger/wiregen/v4"
+	"github.com/cplieger/wiregen/v4/testdata/basic"
+	"github.com/cplieger/wiregen/v4/testdata/edges"
 )
 
 // Tests for the Go-type → TypeScript-type mapping performed by the AST field
@@ -14,17 +14,15 @@ import (
 // maps, aliases, time.Time, []byte, json.RawMessage, interfaces, and the
 // empty/optional/unregistered edge cases.
 
-const edgesPkg = "github.com/cplieger/wiregen/v3/testdata/edges"
+const edgesPkg = "github.com/cplieger/wiregen/v4/testdata/edges"
 
 // edgesReg builds a registry over the edges fixture package for the given
 // registered types. Shared by the type-mapping, embedding, tag, and decoder
 // test files.
-func edgesReg(types ...wiregen.WireType) *wiregen.Registry {
-	r := wiregen.NewRegistry(
+func edgesReg(types ...wiregen.WireType) *testRegistry {
+	r := newTestRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{edgesPkg}
 	r.Types = types
 	return r
 }
@@ -33,27 +31,26 @@ func edgesReg(types ...wiregen.WireType) *wiregen.Registry {
 
 func TestAllKindsTypes(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.AllKinds]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	checks := map[string]string{
-		"bool: boolean":               "bool",
-		"int: number":                 "int",
-		"int8: number":                "int8",
-		"int16: number":               "int16",
-		"int32: number":               "int32",
-		"int64: number":               "int64",
-		"uint: number":                "uint",
-		"uint8: number":               "uint8",
-		"uint16: number":              "uint16",
-		"uint32: number":              "uint32",
-		"uint64: number":              "uint64",
-		"float32: number":             "float32",
-		"float64: number":             "float64",
-		"string: string":              "str",
-		"slice: string[]":             "slice",
-		"map: Record<string, string>": "map",
-		"bytes: string":               "bytes",
-		"raw: unknown":                "raw",
-		"iface: unknown":              "iface",
+		"bool: boolean":                  "bool",
+		"int: number":                    "int",
+		"int8: number":                   "int8",
+		"int16: number":                  "int16",
+		"int32: number":                  "int32",
+		"int64: number":                  "int64",
+		"uint: number":                   "uint",
+		"uint8: number":                  "uint8",
+		"uint16: number":                 "uint16",
+		"uint32: number":                 "uint32",
+		"uint64: number":                 "uint64",
+		"float32: number":                "float32",
+		"float64: number":                "float64",
+		"string: string":                 "str",
+		"slice: string[]":                "slice",
+		"map: { [key: string]: string }": "map",
+		"bytes: string":                  "bytes",
+		"raw: unknown":                   "raw",
 	}
 	for expected, label := range checks {
 		if !strings.Contains(out, expected) {
@@ -66,7 +63,7 @@ func TestAllKindsTypes(t *testing.T) {
 
 func TestRecursiveEmbeddedStruct(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TreeNode]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "value: string;") {
 		t.Errorf("expected value field, got:\n%s", out)
 	}
@@ -74,7 +71,7 @@ func TestRecursiveEmbeddedStruct(t *testing.T) {
 
 func TestMutualRecursion(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.CycleA](), wiregen.TypeRef[edges.CycleB]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface CycleA") {
 		t.Errorf("missing CycleA, got:\n%s", out)
 	}
@@ -85,7 +82,7 @@ func TestMutualRecursion(t *testing.T) {
 
 func TestSelfReferentialSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SelfSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "children?: SelfSlice[];") {
 		t.Errorf("expected self-referential slice, got:\n%s", out)
 	}
@@ -93,8 +90,8 @@ func TestSelfReferentialSlice(t *testing.T) {
 
 func TestSelfReferentialMap(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SelfMap]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "children?: Record<string, SelfMap>;") {
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "children?: { [key: string]: SelfMap };") {
 		t.Errorf("expected self-referential map, got:\n%s", out)
 	}
 }
@@ -105,7 +102,7 @@ func TestThreeWayCycle(t *testing.T) {
 		wiregen.TypeRef[edges.CycleY](),
 		wiregen.TypeRef[edges.CycleZ](),
 	)
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface CycleX") {
 		t.Errorf("missing CycleX, got:\n%s", out)
 	}
@@ -115,7 +112,7 @@ func TestThreeWayCycle(t *testing.T) {
 
 func TestTypeAlias(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasAliases]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "label: string;") {
 		t.Errorf("type alias MyString should resolve to string, got:\n%s", out)
 	}
@@ -126,7 +123,7 @@ func TestTypeAlias(t *testing.T) {
 
 func TestTimeAlias(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasTimeAlias]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "at: string;") {
 		t.Errorf("time.Time alias should still resolve to string, got:\n%s", out)
 	}
@@ -134,7 +131,7 @@ func TestTimeAlias(t *testing.T) {
 
 func TestAliasOfAlias(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasAliasOfAlias]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// AliasOfAlias -> MyString -> string
 	if !strings.Contains(out, "val: string;") {
 		t.Errorf("alias-of-alias should resolve to string, got:\n%s", out)
@@ -143,7 +140,7 @@ func TestAliasOfAlias(t *testing.T) {
 
 func TestPointerToAlias(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasPtrAlias]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// *MyString -> optional string
 	if !strings.Contains(out, "name?: string;") {
 		t.Errorf("*alias should be optional string, got:\n%s", out)
@@ -152,7 +149,7 @@ func TestPointerToAlias(t *testing.T) {
 
 func TestDeepTimeAlias(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasDeepTimeAlias]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// MyTimeAlias -> MyTime -> time.Time -> string
 	if !strings.Contains(out, "at: string;") {
 		t.Errorf("deep time alias should resolve to string, got:\n%s", out)
@@ -160,13 +157,11 @@ func TestDeepTimeAlias(t *testing.T) {
 }
 
 func TestTimeToString(t *testing.T) {
-	r := wiregen.NewRegistry(
+	r := newTestRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.HasTime]()}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "created: string;") {
 		t.Errorf("time.Time should map to string, got:\n%s", out)
 	}
@@ -179,7 +174,7 @@ func TestTimeToString(t *testing.T) {
 
 func TestDoublePointer(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DoublePtr]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "val?: string") {
 		t.Errorf("double pointer should be optional string, got:\n%s", out)
 	}
@@ -187,7 +182,7 @@ func TestDoublePointer(t *testing.T) {
 
 func TestTriplePointer(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TriplePtr]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "val?: string") {
 		t.Errorf("***string should be optional string, got:\n%s", out)
 	}
@@ -195,7 +190,7 @@ func TestTriplePointer(t *testing.T) {
 
 func TestAllPointerFieldsOptional(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.AllPointerFields]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "a?: string") {
 		t.Errorf("*string should be optional, got:\n%s", out)
 	}
@@ -212,7 +207,7 @@ func TestAllPointerFieldsOptional(t *testing.T) {
 
 func TestPointerToSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.PtrToSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "items?: string[]") {
 		t.Errorf("*[]string should be optional string[], got:\n%s", out)
 	}
@@ -220,15 +215,15 @@ func TestPointerToSlice(t *testing.T) {
 
 func TestPointerToMap(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.PtrToMap]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "data?: Record<string, number>") {
-		t.Errorf("*map[string]int should be optional Record<string, number>, got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "data?: { [key: string]: number }") {
+		t.Errorf("*map[string]int should be optional { [key: string]: number }, got:\n%s", out)
 	}
 }
 
 func TestOptionalByteSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.OptionalByteSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	// *[]byte → optional string (pointer + []byte = optional + base64)
 	if !strings.Contains(out, "data?: string") {
 		t.Errorf("*[]byte should produce optional string, got:\n%s", out)
@@ -239,7 +234,7 @@ func TestOptionalByteSlice(t *testing.T) {
 
 func TestSliceOfSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SliceOfSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "matrix: string[][]") {
 		t.Errorf("expected string[][], got:\n%s", out)
 	}
@@ -247,7 +242,7 @@ func TestSliceOfSlice(t *testing.T) {
 
 func TestSliceOfSliceOfSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SliceOfSliceOfSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "cube: number[][][]") {
 		t.Errorf("[][][]int should produce number[][][], got:\n%s", out)
 	}
@@ -255,71 +250,71 @@ func TestSliceOfSliceOfSlice(t *testing.T) {
 
 func TestMapOfSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfSlice]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "data: Record<string, number[]>") {
-		t.Errorf("expected Record<string, number[]>, got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "data: { [key: string]: number[] }") {
+		t.Errorf("expected { [key: string]: number[] }, got:\n%s", out)
 	}
 }
 
 func TestSliceOfMap(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SliceOfMap]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "items: Record<string, string>[]") {
-		t.Errorf("expected Record<string, string>[], got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "items: { [key: string]: string }[]") {
+		t.Errorf("expected { [key: string]: string }[], got:\n%s", out)
 	}
 }
 
 func TestMapOfStructs(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfStructs](), wiregen.TypeRef[edges.MapVal]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "data: Record<string, MapVal>") {
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "data: { [key: string]: MapVal }") {
 		t.Errorf("missing map of structs, got:\n%s", out)
 	}
 }
 
 func TestMapOfMap(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfMap]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "Record<string, Record<string, number>>") {
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "{ [key: string]: { [key: string]: number } }") {
 		t.Errorf("map of map should produce nested Record, got:\n%s", out)
 	}
 }
 
 func TestDeeplyNestedMap(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.DeeplyNestedMap]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "Record<string, Record<string, Record<string, string>>>") {
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "{ [key: string]: { [key: string]: { [key: string]: string } } }") {
 		t.Errorf("deeply nested map should produce nested Records, got:\n%s", out)
 	}
 }
 
 func TestSliceOfPointers(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.SliceOfPtrs]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "names: string[]") {
-		t.Errorf("[]*string should produce string[], got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "names: (string | null)[]") {
+		t.Errorf("[]*string should produce (string | null)[], got:\n%s", out)
 	}
 }
 
 func TestMapOfPointers(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfPtrs]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "scores: Record<string, number>") {
-		t.Errorf("map[string]*int should produce Record<string, number>, got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "scores: { [key: string]: number | null }") {
+		t.Errorf("map[string]*int should produce { [key: string]: number | null }, got:\n%s", out)
 	}
 }
 
 func TestMapOfBytes(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfBytes]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "blobs: Record<string, string>") {
-		t.Errorf("map[string][]byte should produce Record<string, string>, got:\n%s", out)
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "blobs: { [key: string]: string }") {
+		t.Errorf("map[string][]byte should produce { [key: string]: string }, got:\n%s", out)
 	}
 }
 
 func TestNestedOptionalPointerStruct(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.NestedOptPtr](), wiregen.TypeRef[edges.Inner]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "inner?: Inner") {
 		t.Errorf("missing optional nested struct, got:\n%s", out)
 	}
@@ -327,7 +322,7 @@ func TestNestedOptionalPointerStruct(t *testing.T) {
 
 func TestTimeSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.TimeSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "dates: string[]") {
 		t.Errorf("[]time.Time should produce string[], got:\n%s", out)
 	}
@@ -335,13 +330,13 @@ func TestTimeSlice(t *testing.T) {
 
 func TestRawMessageSlice(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.RawSlice]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "items: unknown[]") {
 		t.Errorf("[]json.RawMessage should produce unknown[], got:\n%s", out)
 	}
 }
 
-// TestTypeMappings_AliasSpellings pins that a mapping key naming an ALIAS
+// TestMappings_AliasSpellings pins that a mapping key naming an ALIAS
 // works as well as one naming the type the alias resolves to. go/types
 // resolves an alias past its own name, so the resolved spelling is a different
 // string — and the stdlib moves it: json.RawMessage was a named type in
@@ -349,7 +344,7 @@ func TestRawMessageSlice(t *testing.T) {
 // encoding/json/jsontext.Value from 1.27, so a consumer keyed on
 // "encoding/json.RawMessage" silently stopped matching on the toolchain bump
 // and got the built-in `unknown` instead of its own mapping.
-func TestTypeMappings_AliasSpellings(t *testing.T) {
+func TestMappings_AliasSpellings(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		typ   wiregen.WireType
@@ -363,33 +358,24 @@ func TestTypeMappings_AliasSpellings(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := edgesReg(tc.typ)
-			r.TypeMappings = map[string]string{tc.key: "MappedShape"}
-			out := mustGen(t, r.GenerateTypes)
+			r.Mappings = map[string]wiregen.Mapping{tc.key: {TS: "MappedShape"}}
+			out := mustGen(t, r.typesFile)
 			want := tc.field + ": MappedShape;"
 			if !strings.Contains(out, want) {
-				t.Errorf("TypeMappings[%q] = not applied, want %q in:\n%s", tc.key, want, out)
+				t.Errorf("Mappings[%q] = not applied, want %q in:\n%s", tc.key, want, out)
 			}
 		})
 	}
 }
 
-// TestDecoderMappings_AliasSpelling pins the same for a DecoderMappings-only
-// entry, which reaches the emitter through fieldInfo.GoTypeName rather than
-// through the type-mapping return.
-func TestDecoderMappings_AliasSpelling(t *testing.T) {
+// TestMappings_AliasSpellingDecoder pins the same for the mapping's decoder,
+// which the emitter finds through fieldInfo.GoTypeName.
+func TestMappings_AliasSpellingDecoder(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasTimeAlias]())
-	r.DecoderMappings = map[string]string{edgesPkg + ".TimeAlias": "decodeStamp"}
-	out := mustGen(t, r.GenerateDecoders)
+	r.Mappings = map[string]wiregen.Mapping{edgesPkg + ".TimeAlias": {TS: "string", Decoder: "decodeStamp"}}
+	out := mustGen(t, r.decodersFile)
 	if !strings.Contains(out, `decodeStamp(o, "at"`) {
-		t.Errorf("DecoderMappings under the alias name = not applied, got:\n%s", out)
-	}
-}
-
-func TestInterfaceSlice(t *testing.T) {
-	r := edgesReg(wiregen.TypeRef[edges.InterfaceSlice]())
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "items: unknown[]") {
-		t.Errorf("[]interface{} should produce unknown[], got:\n%s", out)
+		t.Errorf("a mapping decoder under the alias name = not applied, got:\n%s", out)
 	}
 }
 
@@ -397,7 +383,7 @@ func TestInterfaceSlice(t *testing.T) {
 
 func TestEmptyStruct(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.EmptyStruct]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface EmptyStruct {\n}") {
 		t.Errorf("expected empty interface, got:\n%s", out)
 	}
@@ -405,8 +391,8 @@ func TestEmptyStruct(t *testing.T) {
 
 func TestOptionalEnumField(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasOptEnum]())
-	r.Enums = map[string]wiregen.EnumDef{"MyEnum": {Values: []string{"a", "b"}}}
-	out := mustGen(t, r.GenerateTypes)
+	r.Enums = []wiregen.EnumRef{wiregen.StringEnum[edges.MyEnum]()}
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "status?: MyEnum") {
 		t.Errorf("expected optional enum field, got:\n%s", out)
 	}
@@ -414,11 +400,9 @@ func TestOptionalEnumField(t *testing.T) {
 
 func TestMapOfUnregisteredStruct(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.MapOfUnregistered]())
-	out := mustGen(t, r.GenerateTypes)
-	// map[string]EmbedPtrBase where EmbedPtrBase is NOT registered: the field
-	// is present and required (no omitempty — maps keep source optionality).
-	if !strings.Contains(out, "data:") {
-		t.Errorf("map field should be present and required, got:\n%s", out)
+	_, err := r.typesFile(t.Context())
+	if want := edgesPkg + ".MapOfUnregistered.Data: map value: struct " + edgesPkg + ".EmbedPtrBase is neither registered nor mapped"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want it to contain %q", err, want)
 	}
 }
 
@@ -427,7 +411,7 @@ func TestMapOfUnregisteredStruct(t *testing.T) {
 func TestTSNameOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.Inner]())
 	r.TSNameOverride = map[string]string{"Inner": "InnerDTO"}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export interface InnerDTO") {
 		t.Errorf("expected InnerDTO, got:\n%s", out)
 	}
@@ -440,23 +424,37 @@ func TestTSNameOverride_sanitizesNonIdentifier(t *testing.T) {
 	// sanitizes to empty falls back to the Go name.
 	r := edgesReg(wiregen.TypeRef[edges.Inner]())
 	r.TSNameOverride = map[string]string{"Inner": "Inner Profile 2"}
-	if out := mustGen(t, r.GenerateTypes); !strings.Contains(out, "export interface InnerProfile2") ||
+	if out := mustGen(t, r.typesFile); !strings.Contains(out, "export interface InnerProfile2") ||
 		strings.Contains(out, "Inner Profile 2") {
 		t.Errorf("expected sanitized InnerProfile2 (no verbatim spaces), got:\n%s", out)
 	}
 
 	r2 := edgesReg(wiregen.TypeRef[edges.Inner]())
 	r2.TSNameOverride = map[string]string{"Inner": "@@@"}
-	if out := mustGen(t, r2.GenerateTypes); !strings.Contains(out, "export interface Inner") {
+	if out := mustGen(t, r2.typesFile); !strings.Contains(out, "export interface Inner") {
 		t.Errorf("expected fallback to Go name Inner for an all-invalid override, got:\n%s", out)
+	}
+}
+
+// An override that is a reserved identifier, such as a keyword or a
+// predefined type name no interface may take, takes the Val suffix.
+func TestTSNameOverride_reservedNameEscaped(t *testing.T) {
+	for _, name := range []string{"delete", "string", "object", "unknown", "globalThis"} {
+		t.Run(name, func(t *testing.T) {
+			r := edgesReg(wiregen.TypeRef[edges.Inner]())
+			r.TSNameOverride = map[string]string{"Inner": name}
+			if out := mustGen(t, r.typesFile); !strings.Contains(out, "export interface "+name+"Val {") {
+				t.Errorf("want interface %sVal, got:\n%s", name, out)
+			}
+		})
 	}
 }
 
 func TestEnumTSNameOverride(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasOptEnum]())
-	r.Enums = map[string]wiregen.EnumDef{"MyEnum": {Values: []string{"a", "b"}}}
+	r.Enums = []wiregen.EnumRef{wiregen.StringEnum[edges.MyEnum]()}
 	r.EnumTSName = map[string]string{"MyEnum": "StatusEnum"}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "export type StatusEnum") {
 		t.Errorf("expected StatusEnum, got:\n%s", out)
 	}
@@ -467,11 +465,11 @@ func TestEnumTSNameOverride(t *testing.T) {
 // reqNum, matching encoding/json's unquoted-number wire form.
 func TestJSONNumberMapsToNumber(t *testing.T) {
 	r := edgesReg(wiregen.TypeRef[edges.HasJSONNumber]())
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	if !strings.Contains(out, "amount: number;") {
 		t.Errorf("json.Number should map to number, got:\n%s", out)
 	}
-	dec := mustGen(t, r.GenerateDecoders)
+	dec := mustGen(t, r.decodersFile)
 	if !strings.Contains(dec, `reqNum(o, "amount"`) {
 		t.Errorf("json.Number should decode with reqNum, got:\n%s", dec)
 	}

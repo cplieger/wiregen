@@ -1,261 +1,163 @@
 package wiregen_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v3"
-	"github.com/cplieger/wiregen/v3/testdata/unions"
+	"github.com/cplieger/wiregen/v4"
+	"github.com/cplieger/wiregen/v4/testdata/unions"
 )
 
-// Tests for //wiregen:union handling: the emitted `export type` alias and the
-// runtime discriminator decoder, including the partial/empty/nil
-// DiscriminatorMap behaviors and the interface-only registration case.
-
-const unionsPkg = "github.com/cplieger/wiregen/v3/testdata/unions"
-
-// unionReg registers the three event variants plus the EventData union
-// interface. Callers set DiscriminatorMap to choose the decoder behavior.
-func unionReg() *wiregen.Registry {
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
-	)
-	r.PackagePaths = []string{unionsPkg}
-	r.Types = []wiregen.WireType{
-		wiregen.TypeRef[unions.CoverageEvent](),
-		wiregen.TypeRef[unions.NotifyEvent](),
-		wiregen.TypeRef[unions.ScanEvent](),
-		{PkgPath: unionsPkg, Name: "EventData"},
+// timingUnion is the enum-tagged Timing fixture's Union.
+func timingUnion() wiregen.Union {
+	return wiregen.Union{
+		Type: wiregen.TypeRef[unions.Timing](),
+		Tag:  "kind",
+		Cases: map[string][]string{
+			"identity": {},
+			"shift":    {"ms"},
+			"linear":   {"scale", "offset_ms"},
+		},
 	}
+}
+
+// shapeUnion is the string-tagged Shape fixture's Union.
+func shapeUnion() wiregen.Union {
+	return wiregen.Union{
+		Type: wiregen.TypeRef[unions.Shape](),
+		Tag:  "type",
+		Cases: map[string][]string{
+			"circle": {"radius", "tags"},
+			"square": {"side", "tags"},
+		},
+	}
+}
+
+// unionReg registers Holder, whose fields reach both unions.
+func unionReg() *testRegistry {
+	r := newTestRegistry()
+	r.Types = []wiregen.WireType{wiregen.TypeRef[unions.Holder]()}
+	r.Enums = []wiregen.EnumRef{wiregen.TextEnum[unions.Kind]()}
+	r.Unions = []wiregen.Union{timingUnion(), shapeUnion()}
 	return r
 }
 
 func TestUnion_TypeAlias(t *testing.T) {
-	out := mustGen(t, unionReg().GenerateTypes)
-	if !strings.Contains(out, "export type EventData = CoverageEvent | NotifyEvent | ScanEvent;") {
-		t.Errorf("union type alias missing, got:\n%s", out)
-	}
-	if !strings.Contains(out, "export interface CoverageEvent {") {
-		t.Errorf("variant interface missing, got:\n%s", out)
-	}
-}
-
-func TestUnion_DecoderAllVariants(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {
-			"coverage":   "CoverageEvent",
-			"notify":     "NotifyEvent",
-			"scan:start": "ScanEvent",
-			"scan:done":  "ScanEvent",
-		},
-	}
-	dec := mustGen(t, r.GenerateDecoders)
-	if !strings.Contains(dec, "export const decodeEventData: (type: string, v: unknown) => EventData") {
-		t.Errorf("missing union decoder signature (discriminator name from directive), got:\n%s", dec)
-	}
+	out := mustGen(t, unionReg().typesFile)
 	for _, want := range []string{
-		`case "coverage": return decodeCoverageEvent(v);`,
-		`case "notify": return decodeNotifyEvent(v);`,
-		`case "scan:start": return decodeScanEvent(v);`,
-		`case "scan:done": return decodeScanEvent(v);`,
+		"export type Timing =\n" +
+			"  | { kind: \"identity\" }\n" +
+			"  | { kind: \"shift\"; ms?: number }\n" +
+			"  | { kind: \"linear\"; scale?: number; offset_ms?: number };",
+		"export type Shape =\n" +
+			"  | { type: \"circle\"; radius?: number; tags: string[] }\n" +
+			"  | { type: \"square\"; side?: number; tags: string[] };",
+		"export interface Holder {\n  timing: Timing;\n  shapes: Shape[];\n}",
 	} {
-		if !strings.Contains(dec, want) {
-			t.Errorf("missing variant case %q, got:\n%s", want, dec)
+		if !strings.Contains(out, want) {
+			t.Errorf("types missing %q, got:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(dec, "default: throw new TypeError(`unknown EventData variant:") {
-		t.Errorf("missing unknown-variant default, got:\n%s", dec)
+	if strings.Contains(out, "export interface Timing") {
+		t.Errorf("a union type also emitted an interface:\n%s", out)
 	}
 }
 
-func TestUnion_PartialDiscriminatorMap(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {"coverage": "CoverageEvent"},
-	}
-	dec := mustGen(t, r.GenerateDecoders)
-	if !strings.Contains(dec, `case "coverage"`) {
-		t.Errorf("partial discriminator should have coverage case, got:\n%s", dec)
-	}
-	if strings.Contains(dec, `case "notify"`) {
-		t.Errorf("unmapped variant should NOT appear, got:\n%s", dec)
-	}
-	if !strings.Contains(dec, "default: throw") {
-		t.Errorf("should have unknown-variant default, got:\n%s", dec)
-	}
-}
-
-func TestUnion_EmptyDiscriminatorMap(t *testing.T) {
-	r := unionReg()
-	// A present-but-empty discriminator map still emits the decoder, but with
-	// no variant cases — only the unknown-variant default.
-	r.DiscriminatorMap = map[string]map[string]string{"EventData": {}}
-	dec := mustGen(t, r.GenerateDecoders)
-	if !strings.Contains(dec, "export const decodeEventData: (type: string, v: unknown) => EventData") {
-		t.Errorf("empty discriminator map should still emit the decoder, got:\n%s", dec)
-	}
-	if !strings.Contains(dec, "default: throw new TypeError(`unknown EventData variant:") {
-		t.Errorf("empty discriminator map decoder should still throw on unknown, got:\n%s", dec)
-	}
-	if strings.Contains(dec, "case \"") {
-		t.Errorf("empty discriminator map should emit no variant cases, got:\n%s", dec)
-	}
-}
-
-func TestUnion_NoDiscriminatorMap_NoDecoder(t *testing.T) {
-	// All variants registered but no DiscriminatorMap → only the type alias is
-	// emitted, no runtime union decoder.
-	dec := mustGen(t, unionReg().GenerateDecoders)
-	if strings.Contains(dec, "decodeEventData") {
-		t.Errorf("nil DiscriminatorMap should NOT produce a union decoder, got:\n%s", dec)
-	}
-}
-
-func TestUnion_InterfaceOnlyEmitsTypeAlias(t *testing.T) {
-	// Registering only the union interface (no variants) must not panic and
-	// still emits the type alias from the directive.
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
-	)
-	r.PackagePaths = []string{unionsPkg}
-	r.Types = []wiregen.WireType{{PkgPath: unionsPkg, Name: "EventData"}}
-	out := mustGen(t, r.GenerateTypes)
-	if !strings.Contains(out, "export type EventData") {
-		t.Errorf("interface with union directive should produce a type alias, got:\n%s", out)
-	}
-}
-
-// --- 1-arg SSE payload adapter (P1) ---
-
-// TestUnion_PayloadAdapterEmitted pins the 1-argument companion decoder: a
-// plain Decoder<EventData> that reads the configured discriminator key off
-// the payload object and dispatches through the 2-arg union decoder.
-func TestUnion_PayloadAdapterEmitted(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {"coverage": "CoverageEvent"},
-	}
-	dec := mustGen(t, r.GenerateDecoders)
-	wants := []string{
-		"export const decodeEventDataPayload: Decoder<EventData> = (v) => {",
-		`const o = asObject(v, "$.event_data");`,
-		`return decodeEventData(reqStr(o, "type", "$.event_data"), o);`,
-	}
-	for _, want := range wants {
-		if !strings.Contains(dec, want) {
-			t.Errorf("payload adapter missing %q, got:\n%s", want, dec)
-		}
-	}
-}
-
-// TestUnion_NoDiscriminatorMap_NoAdapter: without a DiscriminatorMap neither
-// the 2-arg decoder nor the payload adapter is emitted.
-func TestUnion_NoDiscriminatorMap_NoAdapter(t *testing.T) {
-	dec := mustGen(t, unionReg().GenerateDecoders)
-	if strings.Contains(dec, "decodeEventDataPayload") {
-		t.Errorf("nil DiscriminatorMap should not produce a payload adapter, got:\n%s", dec)
-	}
-}
-
-// TestUnion_SSERegistryBindsAdapter pins the registry binding: an SSE event
-// whose type carries a DiscriminatorMap binds the 1-arg payload adapter (the
-// 2-arg decoder cannot satisfy the registry's Decoder<T> shape), in both bus
-// and self-contained registry modes; plain struct events keep their decoder.
-func TestUnion_SSERegistryBindsAdapter(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {"coverage": "CoverageEvent"},
-	}
-	r.SSEEvents = []wiregen.SSERegEntry{
-		{EventType: "event", TypeName: "EventData"},
-		{EventType: "scan", TypeName: "ScanEvent"},
-	}
-	reg := mustGenNoLoad(t, r.GenerateRegistry)
+func TestUnion_Decoder(t *testing.T) {
+	out := mustGen(t, unionReg().decodersFile)
 	for _, want := range []string{
-		`registerSSEDecoder("event", decodeEventDataPayload);`,
-		`registerSSEDecoder("scan", decodeScanEvent);`,
-		"import { decodeEventDataPayload, decodeScanEvent } from \"./decoders.gen.js\";",
+		"export const decodeTiming: Decoder<Timing> = (v) => {",
+		`const tag = reqOneOf(o, "kind", ["identity", "shift", "linear"] as const, "$.timing");`,
+		`    case "identity": {`,
+		`      refuseKeys(o, ["ms", "scale", "offset_ms"], "$.timing");`,
+		`      const out: globalThis.Extract<Timing, { kind: "identity" }> = {`,
+		`        kind: tag,`,
+		`      refuseKeys(o, ["scale", "offset_ms"], "$.timing");`,
+		`      const out: globalThis.Extract<Timing, { kind: "shift" }> = {`,
+		`      refuseKeys(o, ["side"], "$.shape");`,
+		"import { own, asObject, reqNum, reqOneOf, decodeArray, refuseKeys, type Decoder }",
 	} {
-		if !strings.Contains(reg, want) {
-			t.Errorf("bus registry missing %q, got:\n%s", want, reg)
-		}
-	}
-
-	r.SelfContainedRegistry = true
-	reg = mustGenNoLoad(t, r.GenerateRegistry)
-	if want := `registry.set("event", decodeEventDataPayload as Decoder<unknown>);`; !strings.Contains(reg, want) {
-		t.Errorf("self-contained registry missing %q, got:\n%s", want, reg)
-	}
-}
-
-// TestUnion_SSEWithoutDiscriminatorMapErrors pins the Generate-time guard: a
-// //wiregen:union type registered in SSEEvents without a DiscriminatorMap has
-// no runtime decoder to bind, so Generate must reject the configuration
-// instead of emitting a registry that references a nonexistent decoder.
-func TestUnion_SSEWithoutDiscriminatorMapErrors(t *testing.T) {
-	r := unionReg()
-	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "event", TypeName: "EventData"}}
-	err := r.Generate(t.Context(), t.TempDir())
-	if err == nil {
-		t.Fatal("Generate should reject a union SSE event without a DiscriminatorMap")
-	}
-	if !strings.Contains(err.Error(), "DiscriminatorMap") {
-		t.Errorf("error should name the missing DiscriminatorMap, got: %v", err)
-	}
-}
-
-// TestUnion_PayloadAdapterNameCollisionErrors pins the second Generate-time
-// union guard: the 1-arg payload adapter is named decode<TSName>Payload, so a
-// registered type whose own TS name ends in "Payload" can claim that exact
-// const name. Emitting both would declare the same TS const twice, so the
-// configuration is rejected instead, naming both types.
-func TestUnion_PayloadAdapterNameCollisionErrors(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {"coverage": "CoverageEvent"},
-	}
-	// ScanEvent's decoder becomes decodeEventDataPayload — the same name as the
-	// EventData union's payload adapter.
-	r.TSNameOverride = map[string]string{"ScanEvent": "EventDataPayload"}
-
-	err := r.Generate(t.Context(), t.TempDir())
-	if err == nil {
-		t.Fatal("Generate() = nil error, want a decoder-name collision error")
-	}
-	for _, want := range []string{"decodeEventDataPayload", "EventData", "ScanEvent"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Generate() error = %q, want it to name %q", err, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("decoders missing %q, got:\n%s", want, out)
 		}
 	}
 }
 
-// TestUnion_GenerateEndToEnd: the P1 completion shape — a union registered in
-// SSEEvents with a DiscriminatorMap generates all files, and regeneration is
-// byte-identical for the existing consumers' no-union configuration (pinned
-// by the golden tests, which carry no unions).
-func TestUnion_GenerateEndToEnd(t *testing.T) {
-	r := unionReg()
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {
-			"coverage": "CoverageEvent",
-			"notify":   "NotifyEvent",
-		},
+// TestUnion_CaseOrder: an enum tag orders the cases as the enum declares
+// them, a string tag by value.
+func TestUnion_CaseOrder(t *testing.T) {
+	out := mustGen(t, unionReg().typesFile)
+	if i, j := strings.Index(out, `"identity"`), strings.Index(out, `"linear"`); i < 0 || j < i {
+		t.Errorf("Timing cases out of enum order:\n%s", out)
 	}
-	r.SSEEvents = []wiregen.SSERegEntry{{EventType: "event", TypeName: "EventData"}}
-	dir := t.TempDir()
-	if err := r.Generate(t.Context(), dir); err != nil {
-		t.Fatalf("Generate: %v", err)
+	if i, j := strings.Index(out, `"circle"`), strings.Index(out, `"square"`); i < 0 || j < i {
+		t.Errorf("Shape cases out of value order:\n%s", out)
 	}
-	reg, err := os.ReadFile(filepath.Join(dir, "registry.gen.ts"))
-	if err != nil {
-		t.Fatalf("registry.gen.ts not written: %v", err)
+}
+
+func TestUnion_Refusals(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*testRegistry)
+		want string
+	}{
+		{"no such tag", func(r *testRegistry) { r.Unions[1].Tag = "kind" }, `has no field "kind"`},
+		{"optional tag", func(r *testRegistry) {
+			r.Types = append(r.Types, wiregen.TypeRef[unions.Untagged]())
+			r.Unions = append(r.Unions, wiregen.Union{Type: wiregen.TypeRef[unions.Untagged](), Tag: "kind", Cases: map[string][]string{"a": {"name"}}})
+		}, `tag "kind" must be a required string or enum field`},
+		{"no case", func(r *testRegistry) { r.Unions[1].Cases = nil }, "declares no case"},
+		{"enum cases differ", func(r *testRegistry) { delete(r.Unions[0].Cases, "linear") }, "must be exactly the members of tag enum Kind"},
+		{"unknown field", func(r *testRegistry) { r.Unions[1].Cases["circle"] = []string{"diameter", "tags"} }, `lists "diameter", which is no field`},
+		{"tag listed", func(r *testRegistry) { r.Unions[1].Cases["circle"] = []string{"type", "radius", "tags"} }, `lists the tag "type"`},
+		{"field twice", func(r *testRegistry) { r.Unions[1].Cases["circle"] = []string{"radius", "radius", "tags"} }, `lists "radius" twice`},
+		{"field in no case", func(r *testRegistry) { r.Unions[1].Cases["square"] = []string{"tags"} }, `field "side" is in no case`},
+		{"always-written field in some cases", func(r *testRegistry) {
+			r.Unions[1].Cases["square"] = []string{"side"}
+		}, `field "tags" is not in every case, but encoding/json writes it in every case`},
+		{"bad case name", func(r *testRegistry) {
+			r.Unions[1].Cases["a b"] = r.Unions[1].Cases["circle"]
+		}, `case "a b" must be letters`},
+		{"declared twice", func(r *testRegistry) { r.Unions = append(r.Unions, shapeUnion()) }, "is declared twice"},
+		{"no type", func(r *testRegistry) { r.Unions = append(r.Unions, wiregen.Union{Tag: "x"}) }, `union with tag "x" names no Type`},
 	}
-	if !strings.Contains(string(reg), "decodeEventDataPayload") {
-		t.Errorf("generated registry does not bind the payload adapter:\n%s", reg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := unionReg()
+			tc.edit(r)
+			_, err := r.typesFile(t.Context())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnion_TypeJoinsTypes: a union's type is generated without being listed
+// in Types.
+func TestUnion_TypeJoinsTypes(t *testing.T) {
+	r := newTestRegistry()
+	r.Unions = []wiregen.Union{shapeUnion()}
+	out := mustGen(t, r.typesFile)
+	if !strings.Contains(out, "export type Shape =") {
+		t.Errorf("union type not generated:\n%s", out)
+	}
+}
+
+// TestUnion_RecursiveArbitraryCapped: a union reaching itself draws through a
+// depth-capped oneof whose first branches are the leaf cases.
+func TestUnion_RecursiveArbitraryCapped(t *testing.T) {
+	r := newTestRegistry()
+	r.Unions = []wiregen.Union{{
+		Type: wiregen.TypeRef[unions.Tree](), Tag: "type",
+		Cases: map[string][]string{"leaf": {"value"}, "node": {"children"}},
+	}}
+	out := mustGen(t, r.arbitrariesFile)
+	entry := letrecEntry(t, out, "Tree")
+	if !strings.HasPrefix(entry, "fc.oneof(") || !strings.Contains(out, "maxDepth: 5") {
+		t.Fatalf("Tree arbitrary is not depth-capped:\n%s", out)
+	}
+	if !strings.Contains(out, `type: fc.constant("node" as const),`) {
+		t.Errorf("tag not fixed per case:\n%s", out)
 	}
 }

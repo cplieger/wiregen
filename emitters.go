@@ -14,26 +14,32 @@ const (
 	tsBoolean      = "boolean"
 	tsString       = "string"
 	tsNumber       = "number"
+
+	helperDecodeArray  = "decodeArray"
+	helperDecodeRecord = "decodeRecord"
+	helperReqStr       = "reqStr"
+	helperReqNum       = "reqNum"
+	helperReqBool      = "reqBool"
 )
 
 // --- types generation ---
 
-func (r *Registry) generateTypes(w *strings.Builder, engine *astEngine) {
-	w.WriteString(r.HeaderComment)
-	r.emitEnumTypes(w)
-	r.emitUnionTypes(w, engine)
-	r.emitStructInterfaces(w, engine)
+func (g *generator) generateTypes(w *strings.Builder, engine *astEngine) {
+	w.WriteString(g.o.headerComment)
+	g.emitEnumTypes(w)
+	g.emitUnionTypes(w, engine)
+	g.emitStructInterfaces(w, engine)
 }
 
 // emitEnumTypes writes the `export type X = "a" | "b";` string-union aliases,
 // deduplicated and sorted by TS name. Dedup iterates Go names in sorted order
 // so a TS-name collision has a deterministic winner (the first Go name in
 // sort order), matching emitEnumConsts' dedup order.
-func (r *Registry) emitEnumTypes(w *strings.Builder) {
-	enumNames := make([]string, 0, len(r.Enums))
+func (g *generator) emitEnumTypes(w *strings.Builder) {
+	enumNames := make([]string, 0, len(g.enums))
 	seenEnumTS := map[string]bool{}
-	for _, name := range enumNamesSlice(r.Enums) {
-		tn := r.tsEnumName(name)
+	for _, name := range enumNamesSlice(g.enums) {
+		tn := g.tsEnumName(name)
 		if seenEnumTS[tn] {
 			continue
 		}
@@ -41,23 +47,12 @@ func (r *Registry) emitEnumTypes(w *strings.Builder) {
 		enumNames = append(enumNames, name)
 	}
 	slices.SortStableFunc(enumNames, func(a, b string) int {
-		return cmp.Compare(r.tsEnumName(a), r.tsEnumName(b))
+		return cmp.Compare(g.tsEnumName(a), g.tsEnumName(b))
 	})
 	for _, name := range enumNames {
-		def := r.Enums[name]
-		w.WriteString("export type " + r.tsEnumName(name) + " = ")
-		if len(def.Values) == 0 {
-			// A registered enum that resolved to zero values (no explicit
-			// Values and no string const block discovered in a loaded
-			// package) must never emit "= ;" (invalid TS — see the
-			// checkNotContains guard in
-			// TestNewASTEngine_discoversEnumsWithoutRegisteredTypes). Emit the
-			// bottom type so output stays syntactically valid; the empty
-			// reqOneOf(...) membership check then fails clearly at decode time.
-			w.WriteString("never;\n\n")
-			continue
-		}
-		for i, v := range def.Values {
+		def := g.enums[name]
+		w.WriteString("export type " + g.tsEnumName(name) + " = ")
+		for i, v := range def.values {
 			if i > 0 {
 				w.WriteString(" | ")
 			}
@@ -67,30 +62,15 @@ func (r *Registry) emitEnumTypes(w *strings.Builder) {
 	}
 }
 
-// emitUnionTypes writes the `export type X = A | B | C;` aliases for the
-// //wiregen:union types.
-func (r *Registry) emitUnionTypes(w *strings.Builder, engine *astEngine) {
+func (g *generator) emitUnionTypes(w *strings.Builder, engine *astEngine) {
 	for _, ti := range engine.types {
-		if ti.Union == nil {
-			continue
+		if ti.Union != nil {
+			g.emitUnionType(w, ti)
 		}
-		if ti.Doc != "" {
-			w.WriteString(ti.Doc)
-		}
-		w.WriteString("export type " + r.tsName(ti.Name) + " = ")
-		for i, v := range ti.Union.Variants {
-			if i > 0 {
-				w.WriteString(" | ")
-			}
-			w.WriteString(r.tsName(v))
-		}
-		w.WriteString(";\n\n")
 	}
 }
 
-// emitStructInterfaces writes the `export interface X { … }` declarations for
-// the non-union types.
-func (r *Registry) emitStructInterfaces(w *strings.Builder, engine *astEngine) {
+func (g *generator) emitStructInterfaces(w *strings.Builder, engine *astEngine) {
 	for _, ti := range engine.types {
 		if ti.Union != nil {
 			continue
@@ -98,7 +78,7 @@ func (r *Registry) emitStructInterfaces(w *strings.Builder, engine *astEngine) {
 		if ti.Doc != "" {
 			w.WriteString(ti.Doc)
 		}
-		w.WriteString("export interface " + r.tsName(ti.Name) + " {\n")
+		w.WriteString("export interface " + g.tsName(ti.Name) + " {\n")
 		for i := range ti.Fields {
 			emitInterfaceField(w, &ti.Fields[i])
 		}
@@ -112,14 +92,10 @@ func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
 	if f.Doc != "" {
 		w.WriteString("  " + f.Doc)
 	}
-	ts := f.TSType
-	if f.JSONString {
-		ts = tsString
-	}
-	if f.Optional {
-		w.WriteString("  " + tsPropName(f.WireName) + "?: " + ts + ";\n")
+	if f.optional() {
+		w.WriteString("  " + tsPropName(f.WireName) + "?: " + f.TSType + ";\n")
 	} else {
-		w.WriteString("  " + tsPropName(f.WireName) + ": " + ts + ";\n")
+		w.WriteString("  " + tsPropName(f.WireName) + ": " + f.TSType + ";\n")
 	}
 }
 
@@ -129,7 +105,7 @@ func emitInterfaceField(w *strings.Builder, f *fieldInfo) {
 // the import/const header lines are derived from what was emitted rather than
 // re-discovered by scanning the emitted text (a heuristic that could match an
 // identifier inside an emitted string literal). The one place text scanning
-// survives is `opaque`: Type/DecoderMappings values are consumer-supplied TS
+// survives is `opaque`: Mappings values are consumer-supplied TS
 // expressions emitted verbatim, so any contract helper, type name, or enum
 // const array they reference is found by scanning those (small) expressions —
 // never the generated body.
@@ -169,32 +145,29 @@ func (u *usedIdents) opaqueRefs(ident string) bool {
 	return false
 }
 
-// generateDecoders writes the decoders file. Callers (Generate,
-// GenerateDecoders) have already rejected a missing ValidatorsImport.
-func (r *Registry) generateDecoders(w *strings.Builder, engine *astEngine) {
-	body, used := r.decoderBodies(engine)
+func (g *generator) generateDecoders(w *strings.Builder, engine *astEngine) {
+	body, used := g.decoderBodies(engine)
 
-	w.WriteString(r.HeaderComment)
-	r.emitHelperImports(w, used)
-	r.emitTypeImports(w, used, engine)
-	r.emitEnumConsts(w, used)
+	w.WriteString(g.o.headerComment)
+	g.emitHelperImports(w, used)
+	g.emitTypeImports(w, used, engine)
+	g.emitEnumConsts(w, used)
 	w.WriteString(body)
 }
 
-// decoderBodies emits the struct decoders followed by the union decoders and
-// returns the concatenated body plus the identifiers it used (which decide
-// the import/const header lines).
-func (r *Registry) decoderBodies(engine *astEngine) (string, *usedIdents) {
+// decoderBodies returns the decoders' body and the identifiers it used,
+// which decide the import and const lines above it.
+func (g *generator) decoderBodies(engine *astEngine) (string, *usedIdents) {
 	var bodies strings.Builder
 	used := newUsedIdents()
 	for _, ti := range engine.types {
 		if ti.Union == nil {
-			r.emitDecoder(&bodies, ti, used)
+			g.emitDecoder(&bodies, ti, used)
 		}
 	}
 	for _, ti := range engine.types {
 		if ti.Union != nil {
-			r.emitUnionDecoder(&bodies, ti, used)
+			g.emitUnionDecoder(&bodies, ti, used)
 		}
 	}
 	return bodies.String(), used
@@ -202,14 +175,9 @@ func (r *Registry) decoderBodies(engine *astEngine) (string, *usedIdents) {
 
 // emitHelperImports writes the validators-module import, listing (in the
 // contract's canonical order) only the helpers the emitted decoders call.
-func (r *Registry) emitHelperImports(w *strings.Builder, used *usedIdents) {
-	allHelpers := []string{
-		"asObject", "asArray", "reqStr", "reqNum", "reqBool",
-		"optStr", "optNum", "optBool", "reqOneOf",
-		"decodeArray", "decodeRecord",
-	}
+func (g *generator) emitHelperImports(w *strings.Builder, used *usedIdents) {
 	var usedHelpers []string
-	for _, h := range allHelpers {
+	for _, h := range validatorsExports[1:] {
 		if used.helpers[h] || used.opaqueRefs(h) {
 			usedHelpers = append(usedHelpers, h)
 		}
@@ -219,19 +187,19 @@ func (r *Registry) emitHelperImports(w *strings.Builder, used *usedIdents) {
 		w.WriteString(strings.Join(usedHelpers, ", "))
 		w.WriteString(", ")
 	}
-	w.WriteString("type Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n")
+	w.WriteString("type Decoder } from \"" + g.validatorsSpec(g.o.decodersFilename) + "\";\n")
 }
 
 // emitTypeImports writes the `import type { … }` line for the type/enum names
 // the emitted decoders reference, sorted; it emits nothing when none are used.
-func (r *Registry) emitTypeImports(w *strings.Builder, used *usedIdents, engine *astEngine) {
+func (g *generator) emitTypeImports(w *strings.Builder, used *usedIdents, engine *astEngine) {
 	candidateNames := make([]string, 0)
 	for _, ti := range engine.types {
-		candidateNames = append(candidateNames, r.tsName(ti.Name))
+		candidateNames = append(candidateNames, g.tsName(ti.Name))
 	}
 	enumSeen := map[string]bool{}
-	for name := range r.Enums {
-		tn := r.tsEnumName(name)
+	for name := range g.enums {
+		tn := g.tsEnumName(name)
 		if !enumSeen[tn] {
 			enumSeen[tn] = true
 			candidateNames = append(candidateNames, tn)
@@ -247,24 +215,24 @@ func (r *Registry) emitTypeImports(w *strings.Builder, used *usedIdents, engine 
 	if len(sorted) > 0 {
 		w.WriteString("import type { ")
 		w.WriteString(strings.Join(sorted, ", "))
-		w.WriteString(" } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
+		w.WriteString(" } from \"" + g.typesSpec(g.o.decodersFilename) + "\";\n")
 	}
 	w.WriteString("\n")
 }
 
 // emitEnumConsts writes the `const XS = [...] as const;` value arrays for the
 // enums the emitted decoders reference (deduped), then a trailing blank line.
-func (r *Registry) emitEnumConsts(w *strings.Builder, used *usedIdents) {
+func (g *generator) emitEnumConsts(w *strings.Builder, used *usedIdents) {
 	emitted := map[string]bool{}
-	for _, name := range enumNamesSlice(r.Enums) {
-		constN := r.enumConstName(name)
+	for _, name := range enumNamesSlice(g.enums) {
+		constN := g.enumConstName(name)
 		if emitted[constN] || (!used.enums[name] && !used.opaqueRefs(constN)) {
 			continue
 		}
 		emitted[constN] = true
-		def := r.Enums[name]
+		def := g.enums[name]
 		w.WriteString("const " + constN + " = [")
-		for i, v := range def.Values {
+		for i, v := range def.values {
 			if i > 0 {
 				w.WriteString(", ")
 			}
@@ -277,286 +245,176 @@ func (r *Registry) emitEnumConsts(w *strings.Builder, used *usedIdents) {
 	}
 }
 
-func (r *Registry) emitDecoder(w *strings.Builder, ti *typeInfo, used *usedIdents) {
-	tn := r.tsName(ti.Name)
-	path := "$." + r.pathName(tn)
+func (g *generator) emitDecoder(w *strings.Builder, ti *typeInfo, used *usedIdents) {
+	tn := g.tsName(ti.Name)
+	path := "$." + g.pathName(tn)
 	used.helper("asObject")
 	used.typeRef(tn)
-	w.WriteString("export const " + r.decoderName(ti.Name) + ": Decoder<" + tn + "> = (v) => {\n")
+	w.WriteString("export const " + g.decoderName(ti.Name) + ": Decoder<" + tn + "> = (v) => {\n")
 	w.WriteString("  const o = asObject(v, \"" + path + "\");\n")
+	fields := make([]*fieldInfo, 0, len(ti.Fields))
+	for i := range ti.Fields {
+		fields = append(fields, &ti.Fields[i])
+	}
+	g.emitFieldDecodes(w, tn, "", fields, path, used)
+	w.WriteString("};\n\n")
+}
 
-	var reqFields, optFields []fieldInfo
-	for _, f := range ti.Fields {
-		if f.Optional {
+// emitFieldDecodes writes the statements that decode fields from o into an
+// out of type outType and return it; lead, when set, is out's first member.
+func (g *generator) emitFieldDecodes(w *strings.Builder, outType, lead string, fields []*fieldInfo, path string, used *usedIdents) {
+	var reqFields, optFields []*fieldInfo
+	for _, f := range fields {
+		if f.optional() {
 			optFields = append(optFields, f)
 		} else {
 			reqFields = append(reqFields, f)
 		}
 	}
-
-	if len(reqFields) > 0 || len(optFields) > 0 {
-		w.WriteString("  const out: " + tn + " = {\n")
+	if lead != "" || len(reqFields) > 0 || len(optFields) > 0 {
+		w.WriteString("  const out: " + outType + " = {\n")
+		if lead != "" {
+			w.WriteString("    " + lead + ",\n")
+		}
 		for _, f := range reqFields {
-			w.WriteString("    " + tsPropName(f.WireName) + ": " + r.reqExpr(&f, path, used) + ",\n")
+			w.WriteString("    " + tsLiteralKey(f.WireName) + ": " + g.reqExpr(f, path, used) + ",\n")
 		}
 		w.WriteString("  };\n")
 	} else {
-		w.WriteString("  const out: " + tn + " = {};\n")
+		w.WriteString("  const out: " + outType + " = {};\n")
 	}
-
 	for _, f := range optFields {
-		r.emitOptionalField(w, &f, path, used)
+		g.emitOptionalField(w, f, path, used)
 	}
-
 	w.WriteString("  return out;\n")
-	w.WriteString("};\n\n")
 }
 
-func (r *Registry) emitUnionDecoder(w *strings.Builder, ti *typeInfo, used *usedIdents) {
-	tn := r.tsName(ti.Name)
-	dm := r.DiscriminatorMap[ti.Name]
-	if dm == nil {
-		return // No discriminator map → only type alias emitted
-	}
-	used.typeRef(tn)
-
-	disc := sanitizeVarName(ti.Union.Discriminator)
-	if disc == "" {
-		disc = "disc"
-	}
-	w.WriteString("export const " + r.decoderName(ti.Name) + ": (" + disc + ": string, v: unknown) => " + tn + " = (" + disc + ", v) => {\n")
-	w.WriteString("  switch (" + disc + ") {\n")
-
-	for _, k := range slices.Sorted(maps.Keys(dm)) {
-		variant := dm[k]
-		w.WriteString("    case \"" + tsStringLiteral(k) + "\": return " + r.decoderName(variant) + "(v);\n")
-	}
-	w.WriteString("    default: throw new TypeError(`unknown " + tn + " variant: ${" + disc + "}`);\n")
-	w.WriteString("  }\n")
-	w.WriteString("};\n\n")
-
-	r.emitUnionPayloadAdapter(w, ti, tn, used)
+func (g *generator) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
+	return f.Bounds.validatorCheck(g.reqDecode(f, path, used), "\""+path+"."+tsStringLiteral(f.WireName)+"\"", used)
 }
 
-// emitUnionPayloadAdapter writes the 1-argument companion of a union's
-// 2-argument decoder: a plain Decoder<X> that reads the configured
-// discriminator key off the payload object itself and dispatches. This is the
-// form the SSE registry (and any other Decoder<T>-shaped consumer) can bind —
-// the 2-argument decoder cannot enter the registry, which was the gap that
-// blocked registering a //wiregen:union type in SSEEvents.
-func (r *Registry) emitUnionPayloadAdapter(w *strings.Builder, ti *typeInfo, tn string, used *usedIdents) {
-	path := "$." + r.pathName(tn)
-	key := tsStringLiteral(ti.Union.Discriminator)
-	used.helper("asObject")
-	used.helper("reqStr")
-	w.WriteString("export const " + r.unionPayloadDecoderName(ti.Name) + ": Decoder<" + tn + "> = (v) => {\n")
-	w.WriteString("  const o = asObject(v, \"" + path + "\");\n")
-	w.WriteString("  return " + r.decoderName(ti.Name) + "(reqStr(o, \"" + key + "\", \"" + path + "\"), o);\n")
-	w.WriteString("};\n\n")
+// ownRead is the expression reading o's own property wn; an inherited one
+// (constructor, toString) reads as absent.
+func ownRead(wn string, used *usedIdents) string {
+	used.helper("own")
+	return "own(o, \"" + wn + "\")"
 }
 
-func (r *Registry) reqExpr(f *fieldInfo, path string, used *usedIdents) string {
+// reqDecode is reqExpr before the bound checks. A required field has no
+// pointer level (presence.go), so null reaches it only as encoding/json's nil
+// collection or []byte, which reads as empty.
+func (g *generator) reqDecode(f *fieldInfo, path string, used *usedIdents) string {
 	wn := tsStringLiteral(f.WireName)
-	if f.JSONString {
-		used.helper("reqStr")
-		return "reqStr(o, \"" + wn + "\", \"" + path + "\")"
-	}
-	if f.IsRaw || f.IsIface {
-		return "o[\"" + wn + "\"] as unknown"
-	}
-	// []byte marshals as a base64 string, but a nil non-omitempty []byte
-	// marshals as null — accept null as the empty string (the same
-	// null-as-zero-value contract as collections).
-	if f.IsBytes {
-		used.helper("reqStr")
-		return "o[\"" + wn + "\"] === null ? \"\" : reqStr(o, \"" + wn + "\", \"" + path + "\")"
-	}
-
-	// Collections are routed before the mapping checks: a slice/map field's
-	// GoTypeName holds its ELEMENT's mapping key (see resolveSliceType), so
-	// Type/DecoderMappings apply per element inside elemDecoderExpr, never to
-	// the collection as a whole. encoding/json marshals a nil non-omitempty
-	// slice/map to null, so a required collection accepts null as empty —
-	// nullable-vs-optional is a documented non-goal, and rejecting
-	// encoding/json's own nil-value output would be a fidelity bug.
-	if f.IsSlice {
-		used.helper("decodeArray")
-		return "o[\"" + wn + "\"] === null ? [] : decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
-	}
-	if f.IsMap {
-		used.helper("decodeRecord")
-		return "o[\"" + wn + "\"] === null ? {} : decodeRecord(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
-	}
-
-	// Custom decoder mapping (scalar field of a mapped type)
-	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
-		used.opaqueExpr(expr)
-		return expr + "(o, \"" + wn + "\", \"" + path + "\")"
-	}
-	// Custom type mapping without decoder
-	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
+	read := ownRead(wn, used)
+	at := ", \"" + path + "\")"
+	switch f.Kind {
+	case kindRaw:
+		return read + " as unknown"
+	case kindBytes:
+		used.helper(helperReqStr)
+		return read + " === null ? \"\" : reqStr(o, \"" + wn + "\"" + at
+	case kindSlice, kindMap:
+		helper, empty := helperDecodeArray, "[]"
+		if f.Kind == kindMap {
+			helper, empty = helperDecodeRecord, "{}"
+		}
+		used.helper(helper)
+		decode := helper + "(" + read + ", " + g.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+		if f.refusesNull() {
+			return decode
+		}
+		return read + " === null ? " + empty + " : " + decode
+	case kindMapped:
+		if f.Mapping.Decoder != "" {
+			used.opaqueExpr(f.Mapping.Decoder)
+			return f.Mapping.Decoder + "(o, \"" + wn + "\"" + at
+		}
 		used.opaqueExpr(f.TSType)
-		return "o[\"" + wn + "\"] as " + f.TSType
-	}
-
-	if f.IsEnum {
+		return read + " as " + f.TSType
+	case kindEnum:
 		used.helper("reqOneOf")
 		used.enumUse(f.GoTypeName)
-		return "reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\")"
+		return "reqOneOf(o, \"" + wn + "\", " + g.enumConstName(f.GoTypeName) + at
+	case kindStruct:
+		return g.decoderName(f.GoTypeName) + "(" + read + ")"
 	}
-	if f.IsStruct {
-		return r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"])"
-	}
-
-	// Unresolved type (e.g. an unregistered nested struct) — pass through as
-	// unknown rather than mis-decoding it as a number.
-	if f.TSType == tsUnknown {
-		return "o[\"" + wn + "\"] as unknown"
-	}
-
-	helper := primHelperAST(f.TSType, false)
+	helper := primHelpers[f.Kind]
 	used.helper(helper)
-	return helper + "(o, \"" + wn + "\", \"" + path + "\")"
+	return helper + "(o, \"" + wn + "\"" + at
 }
 
-func (r *Registry) emitOptionalField(w *strings.Builder, f *fieldInfo, path string, used *usedIdents) {
-	wn := tsStringLiteral(f.WireName)
-	// A present-null field decodes as absent in every branch below except the
-	// raw/interface/unknown pass-throughs, where null is data. encoding/json
-	// marshals a nil pointer/slice/map to null, and the library's
-	// optional-only model (nullable-vs-optional is a documented non-goal)
-	// maps null and a missing key to the same TS undefined.
-	guard := "o[\"" + wn + "\"] !== undefined && o[\"" + wn + "\"] !== null"
-	if f.JSONString {
-		used.helper("optStr")
-		varName := localVarName(f.WireName)
-		w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : optStr(o, \"" + wn + "\", \"" + path + "\");\n")
-		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
-		return
-	}
-	if f.IsRaw || f.IsIface {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as unknown;\n")
-		return
-	}
-	// Collections before the mapping checks — see reqExpr.
-	if f.IsSlice {
-		used.helper("decodeArray")
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeArray(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
-		return
-	}
-	if f.IsMap {
-		used.helper("decodeRecord")
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = decodeRecord(o[\"" + wn + "\"], " + r.elemDecoderExpr(f.Elem, wn, path, used) + ", \"" + path + "." + wn + "\");\n")
-		return
-	}
-	if expr, ok := r.DecoderMappings[f.GoTypeName]; ok {
-		used.opaqueExpr(expr)
-		varName := localVarName(f.WireName)
-		w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : " + expr + "(o, \"" + wn + "\", \"" + path + "\");\n")
-		w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
-		return
-	}
-	if _, ok := r.TypeMappings[f.GoTypeName]; ok {
-		used.opaqueExpr(f.TSType)
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as " + f.TSType + ";\n")
-		return
-	}
-	if f.IsEnum {
-		used.helper("reqOneOf")
-		used.enumUse(f.GoTypeName)
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = reqOneOf(o, \"" + wn + "\", " + r.enumConstName(f.GoTypeName) + ", \"" + path + "\");\n")
-		return
-	}
-	if f.IsStruct {
-		w.WriteString("  if (" + guard + ") out" + tsMemberRef(f.WireName) + " = " + r.decoderName(f.GoTypeName) + "(o[\"" + wn + "\"]);\n")
-		return
-	}
+var primHelpers = map[wireKind]string{
+	kindString: helperReqStr, kindTime: helperReqStr, kindQuoted: helperReqStr, kindBool: helperReqBool,
+	kindNumber: helperReqNum, kindInt: helperReqNum, kindUint: helperReqNum,
+}
 
-	// Unresolved type — pass through as unknown rather than optNum.
-	if f.TSType == tsUnknown {
-		w.WriteString("  if (o[\"" + wn + "\"] !== undefined) out" + tsMemberRef(f.WireName) + " = o[\"" + wn + "\"] as unknown;\n")
-		return
+// emitOptionalField decodes f into out when present. Null reads as absent,
+// except as a json.RawMessage's data and where a Count bound refuses it. The
+// block scopes its local, so no field name can collide with it.
+func (g *generator) emitOptionalField(w *strings.Builder, f *fieldInfo, path string, used *usedIdents) {
+	cond := "$v !== undefined"
+	if f.Kind != kindRaw && !f.refusesNull() {
+		cond += " && $v !== null"
 	}
-
-	helper := primHelperAST(f.TSType, true)
-	used.helper(helper)
-	varName := localVarName(f.WireName)
-	w.WriteString("  const " + varName + " = o[\"" + wn + "\"] === null ? undefined : " + helper + "(o, \"" + wn + "\", \"" + path + "\");\n")
-	w.WriteString("  if (" + varName + " !== undefined) out" + tsMemberRef(f.WireName) + " = " + varName + ";\n")
+	w.WriteString("  {\n    const $v = " + ownRead(tsStringLiteral(f.WireName), used) + ";\n")
+	w.WriteString("    if (" + cond + ") " + setOwn(f.WireName, g.reqExpr(f, path, used)) + ";\n  }\n")
 }
 
 // elemDecoderExpr returns the per-element decoder expression for the slice
 // element or map value described by elem. wn and path are the owning field's
-// wire name and type-level path: a DecoderMappings element decoder keeps its
+// wire name and type-level path: a mapping's element decoder keeps its
 // (obj, key, path) contract by being called through a synthesized single-key
 // object carrying the real wire name, so its error messages locate the actual
 // field (decodeArray/decodeRecord prefix the element index/key themselves).
-//
-// A collection element recurses BEFORE the mapping checks (the same routing
-// rule as reqExpr — GoTypeName carries the LEAF element's mapping key, so a
-// mapped leaf inside a nested collection applies at its own level, never to
-// the collection value). Each nested level accepts null as its empty value
-// (encoding/json marshals a nil slice/map to null) and validates its own
-// elements, so [][]T and map[string][]T decode with real per-level checks
-// instead of an identity cast.
-func (r *Registry) elemDecoderExpr(elem *fieldInfo, wn, path string, used *usedIdents) string {
-	if elem.IsSlice {
-		used.helper("decodeArray")
-		return "(v) => v === null ? [] : decodeArray(v, " + r.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+func (g *generator) elemDecoderExpr(elem *fieldInfo, wn, path string, used *usedIdents) string {
+	dec := g.elemDecode(elem, wn, path, used)
+	if elem.Bounds != nil {
+		dec = "(v) => " + elem.Bounds.validatorCheck("("+dec+")(v)", "\""+path+"."+wn+"\"", used)
 	}
-	if elem.IsMap {
-		used.helper("decodeRecord")
-		return "(v) => v === null ? {} : decodeRecord(v, " + r.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+	if elem.nullElem() {
+		dec = "(v) => v === null ? null : (" + dec + ")(v)"
 	}
-
-	if expr, ok := r.DecoderMappings[elem.GoTypeName]; ok {
-		used.opaqueExpr(expr)
-		return "(v) => " + expr + "({\"" + wn + "\": v} as Record<string, unknown>, \"" + wn + "\", \"" + path + "\")"
-	}
-	if mapped, ok := r.TypeMappings[elem.GoTypeName]; ok {
-		used.opaqueExpr(mapped)
-		return "(v) => v as " + mapped
-	}
-	if r.typeNames[elem.GoTypeName] {
-		return r.decoderName(elem.GoTypeName)
-	}
-	if _, ok := r.Enums[elem.GoTypeName]; ok {
-		constName := r.enumConstName(elem.GoTypeName)
-		used.enumUse(elem.GoTypeName)
-		used.typeRef(r.tsEnumName(elem.GoTypeName))
-		return "(v) => { const s = v as string; if (!" + constName + ".includes(s as never)) throw new TypeError(\"invalid enum value: \" + s); return s as " + r.tsEnumName(elem.GoTypeName) + "; }"
-	}
-	// []byte element: a base64 string on the wire, and a nil element
-	// marshals to null — accept null as the empty string (null-as-zero).
-	if elem.IsBytes {
-		return "(v) => { if (v === null) return \"\"; if (typeof v !== \"string\") throw new TypeError(\"expected string\"); return v; }"
-	}
-
-	switch elem.TSType {
-	case tsString:
-		return "(v) => { if (typeof v !== \"string\") throw new TypeError(\"expected string\"); return v as string; }"
-	case tsNumber:
-		return "(v) => { if (typeof v !== \"number\") throw new TypeError(\"expected number\"); return v as number; }"
-	case tsBoolean:
-		return "(v) => { if (typeof v !== \"boolean\") throw new TypeError(\"expected boolean\"); return v as boolean; }"
-	}
-
-	return tsIdentityCast
+	return dec
 }
 
-func primHelperAST(tsType string, optional bool) string {
-	prefix := "req"
-	if optional {
-		prefix = "opt"
+// elemDecode is elemDecoderExpr before the element's bound checks. Each
+// collection level accepts null as empty, as encoding/json writes a nil one,
+// unless a Count lower bound refuses it.
+func (g *generator) elemDecode(elem *fieldInfo, wn, path string, used *usedIdents) string {
+	switch elem.Kind {
+	case kindSlice, kindMap:
+		helper, empty := helperDecodeArray, "[]"
+		if elem.Kind == kindMap {
+			helper, empty = helperDecodeRecord, "{}"
+		}
+		used.helper(helper)
+		decode := helper + "(v, " + g.elemDecoderExpr(elem.Elem, wn, path, used) + ", \"" + path + "." + wn + "\")"
+		if elem.refusesNull() {
+			return "(v) => " + decode
+		}
+		return "(v) => v === null ? " + empty + " : " + decode
+	case kindMapped:
+		if elem.Mapping.Decoder != "" {
+			used.opaqueExpr(elem.Mapping.Decoder)
+			return "(v) => " + elem.Mapping.Decoder + "({\"" + wn + "\": v} as globalThis.Record<string, unknown>, \"" + wn + "\", \"" + path + "\")"
+		}
+		used.opaqueExpr(elem.TSType)
+		return "(v) => v as " + elem.TSType
+	case kindStruct:
+		return g.decoderName(elem.GoTypeName)
+	case kindEnum:
+		constName := g.enumConstName(elem.GoTypeName)
+		used.enumUse(elem.GoTypeName)
+		used.typeRef(g.tsEnumName(elem.GoTypeName))
+		return "(v) => { const s = v as string; if (!" + constName + ".includes(s as never)) throw new globalThis.TypeError(\"invalid enum value: \" + s); return s as " + g.tsEnumName(elem.GoTypeName) + "; }"
+	case kindBytes:
+		// A nil []byte element marshals to null, which reads as empty.
+		return "(v) => { if (v === null) return \"\"; if (typeof v !== \"string\") throw new globalThis.TypeError(\"expected string\"); return v; }"
+	case kindRaw:
+		return tsIdentityCast
 	}
-	switch tsType {
-	case tsString:
-		return prefix + "Str"
-	case tsBoolean:
-		return prefix + "Bool"
-	default:
-		return prefix + "Num"
-	}
+	ts := elem.TSType
+	return "(v) => { if (typeof v !== \"" + ts + "\") throw new globalThis.TypeError(\"expected " + ts + "\"); return v as " + ts + "; }"
 }
 
 // --- arbitraries generation ---
@@ -581,20 +439,6 @@ const (
 	arbFiniteNumber = "fc.double({ noNaN: true, noDefaultInfinity: true })"
 )
 
-// arbMapKeyDecl declares the key arbitrary every emitted dictionary uses.
-const arbMapKeyDecl = `// A map key is never the string "__proto__". JSON.parse materializes such a key
-// as an own property, while the generated decodeRecord assigns out[k], and
-// out["__proto__"] sets the prototype instead of adding a key — so the entry
-// would vanish from the decoded value and no round trip could hold.
-const arbMapKey: fc.Arbitrary<string> = fc.string().filter((k) => k !== "__proto__");
-
-`
-
-// arbUses records what the emitted arbitraries referenced, so a declaration is
-// written only when something uses it (an unused const is a lint error in the
-// consumer, and the consumer cannot edit generated output).
-type arbUses struct{ mapKey bool }
-
 // arbName is the exported arbitrary's name for a TS type or enum name.
 func arbName(tsName string) string { return "arb" + tsName }
 
@@ -602,65 +446,52 @@ func arbName(tsName string) string { return "arb" + tsName }
 // registered enum and per registered type, plus the ARBITRARY_BY_TYPE lookup
 // table a consumer's property test iterates. Callers have already rejected a
 // missing ArbitrariesImport by defaulting it in initDefaults.
-func (r *Registry) generateArbitraries(w *strings.Builder, engine *astEngine) {
+func (g *generator) generateArbitraries(w *strings.Builder, engine *astEngine) {
 	var body strings.Builder
-	used := &arbUses{}
-	r.emitEnumArbitraries(&body)
-	r.emitTypeArbitraries(&body, engine, used)
-	r.emitArbitraryTable(&body, engine)
+	g.emitEnumArbitraries(&body)
+	g.emitTypeArbitraries(&body, engine)
+	g.emitArbitraryTable(&body, engine)
 
-	w.WriteString(r.HeaderComment)
-	w.WriteString("import fc from \"" + tsStringLiteral(r.ArbitrariesImport) + "\";\n")
-	r.emitArbTypeImports(w, engine)
-	if used.mapKey {
-		w.WriteString(arbMapKeyDecl)
-	}
+	w.WriteString(g.o.headerComment)
+	w.WriteString("import fc from \"" + tsStringLiteral(g.o.arbitrariesImport) + "\";\n")
+	g.emitArbTypeImports(w, engine)
 	w.WriteString(body.String())
 }
 
 // emitArbTypeImports writes the `import type { … }` line naming every type and
 // enum the emitted arbitraries annotate, sorted.
-func (r *Registry) emitArbTypeImports(w *strings.Builder, engine *astEngine) {
+func (g *generator) emitArbTypeImports(w *strings.Builder, engine *astEngine) {
 	names := map[string]bool{}
 	for _, ti := range engine.types {
-		names[r.tsName(ti.Name)] = true
+		names[g.tsName(ti.Name)] = true
 	}
-	for name := range r.Enums {
-		names[r.tsEnumName(name)] = true
+	for name := range g.enums {
+		names[g.tsEnumName(name)] = true
 	}
 	sorted := slices.Sorted(maps.Keys(names))
 	if len(sorted) > 0 {
-		w.WriteString("import type { " + strings.Join(sorted, ", ") + " } from \"" + tsStringLiteral(r.TypesImportPath) + "\";\n")
+		w.WriteString("import type { " + strings.Join(sorted, ", ") + " } from \"" + g.typesSpec(g.o.arbitrariesFilename) + "\";\n")
 	}
 	w.WriteString("\n")
 }
 
 // emitEnumArbitraries writes one fc.constantFrom per registered enum, drawing
 // exactly the registered value set — the vocabulary the decoder's reqOneOf
-// membership check accepts, from the same EnumDef the check was emitted from.
-func (r *Registry) emitEnumArbitraries(w *strings.Builder) {
+// membership check accepts, from the same members the check was emitted from.
+func (g *generator) emitEnumArbitraries(w *strings.Builder) {
 	emitted := 0
 	seen := map[string]bool{}
-	for _, name := range enumNamesSlice(r.Enums) {
-		tn := r.tsEnumName(name)
+	for _, name := range enumNamesSlice(g.enums) {
+		tn := g.tsEnumName(name)
 		if seen[tn] {
 			continue
 		}
 		seen[tn] = true
 		emitted++
-		def := r.Enums[name]
+		def := g.enums[name]
 		w.WriteString("export const " + arbName(tn) + ": fc.Arbitrary<" + tn + "> = ")
-		if len(def.Values) == 0 {
-			// A zero-value enum's TS type is `never` (see emitEnumTypes), so no
-			// value inhabits it. fc.constantFrom() with no argument throws at
-			// module evaluation, which would break every import of this file, so
-			// emit a constant that can be drawn and never decoded — the decoder's
-			// empty membership check rejects it, which is the honest outcome.
-			w.WriteString("fc.constant(undefined as unknown as never);\n")
-			continue
-		}
 		w.WriteString("fc.constantFrom(")
-		for i, v := range def.Values {
+		for i, v := range def.values {
 			if i > 0 {
 				w.WriteString(", ")
 			}
@@ -675,7 +506,7 @@ func (r *Registry) emitEnumArbitraries(w *strings.Builder) {
 
 // emitTypeArbitraries writes the struct and union arbitraries inside one
 // fc.letrec, then one exported const per type.
-func (r *Registry) emitTypeArbitraries(w *strings.Builder, engine *astEngine, used *arbUses) {
+func (g *generator) emitTypeArbitraries(w *strings.Builder, engine *astEngine) {
 	if len(engine.types) == 0 {
 		return
 	}
@@ -686,77 +517,87 @@ func (r *Registry) emitTypeArbitraries(w *strings.Builder, engine *astEngine, us
 	// no consumer's typecheck reports.
 	w.WriteString("const arbModel = fc.letrec<{\n")
 	for _, ti := range engine.types {
-		tn := r.tsName(ti.Name)
+		tn := g.tsName(ti.Name)
 		w.WriteString("  " + tn + ": " + tn + ";\n")
 	}
 	w.WriteString("}>((tie) => ({\n")
-	reaches := r.arbReachability(engine)
+	reaches := g.arbReachability(engine)
 	for _, ti := range engine.types {
-		w.WriteString("  " + r.tsName(ti.Name) + ": " + r.arbForType(ti, used, reaches) + ",\n")
+		w.WriteString("  " + g.tsName(ti.Name) + ": " + g.arbForType(ti, reaches) + ",\n")
 	}
 	w.WriteString("}));\n\n")
 	for _, ti := range engine.types {
-		tn := r.tsName(ti.Name)
+		tn := g.tsName(ti.Name)
 		w.WriteString("export const " + arbName(tn) + ": fc.Arbitrary<" + tn + "> = arbModel." + tn + ";\n")
 	}
 	w.WriteString("\n")
 }
 
-// arbForType renders one registered type's arbitrary: a oneof over the variants
-// for a //wiregen:union type, otherwise a record over the fields. A struct that
-// can reach itself is a depth-capped oneof of a leaf record and the full one.
-func (r *Registry) arbForType(ti *typeInfo, used *arbUses, reaches map[string]map[string]bool) string {
+// arbForType renders one registered type's arbitrary: a oneof over the cases
+// for a union, otherwise a record over the fields. A type that can reach
+// itself is a depth-capped oneof of its leaf records and its full ones.
+func (g *generator) arbForType(ti *typeInfo, reaches map[string]map[string]bool) string {
+	var recursive func(*fieldInfo) bool
+	if reaches[ti.Name][ti.Name] {
+		recursive = func(f *fieldInfo) bool {
+			for _, ref := range g.arbRefs(f) {
+				if ref == ti.Name || reaches[ref][ti.Name] {
+					return true
+				}
+			}
+			return false
+		}
+	}
 	if ti.Union != nil {
-		return r.arbForUnion(ti)
+		return g.arbForUnion(ti, recursive)
 	}
 	if len(ti.Fields) == 0 {
 		return "fc.record({})"
 	}
-	if !reaches[ti.Name][ti.Name] {
-		return r.arbRecord(ti, used, "  ", nil)
+	fields := make([]*fieldInfo, 0, len(ti.Fields))
+	for i := range ti.Fields {
+		fields = append(fields, &ti.Fields[i])
 	}
-	recursive := func(f *fieldInfo) bool {
-		for _, ref := range r.arbRefs(f) {
-			if ref == ti.Name || reaches[ref][ti.Name] {
-				return true
-			}
-		}
-		return false
+	if recursive == nil {
+		return g.arbRecord(fields, "  ", nil, nil)
 	}
 	return "fc.oneof(\n    " + arbRecursionCap + ",\n    " +
-		r.arbRecord(ti, used, "    ", recursive) + ",\n    " +
-		r.arbRecord(ti, used, "    ", nil) + ",\n  )"
+		g.arbRecord(fields, "    ", recursive, nil) + ",\n    " +
+		g.arbRecord(fields, "    ", nil, nil) + ",\n  )"
 }
 
-// arbRecord renders a struct's fc.record at the given closing indent. With a
-// non-nil recursive predicate it renders the LEAF record a depth cap forces:
-// a recursive optional field is absent and a recursive collection is empty,
-// while a recursive required struct field keeps its tie, because that type is
-// capped too and Go admits no unbroken chain of required struct fields.
-func (r *Registry) arbRecord(ti *typeInfo, used *arbUses, indent string, recursive func(*fieldInfo) bool) string {
+// arbRecord renders an fc.record over fields at the given closing indent,
+// fixed giving a field's arbitrary by wire name. With a non-nil recursive
+// predicate it renders the LEAF record a depth cap forces: a recursive
+// optional field is absent and a recursive collection is empty, while a
+// recursive required struct field keeps its tie, because that type is capped
+// too and Go admits no unbroken chain of required struct fields.
+func (g *generator) arbRecord(fields []*fieldInfo, indent string, recursive func(*fieldInfo) bool, fixed map[string]string) string {
 	var b strings.Builder
 	var required []string
 	b.WriteString("fc.record(\n" + indent + "  {\n")
-	for i := range ti.Fields {
-		f := &ti.Fields[i]
+	for _, f := range fields {
 		leaf := recursive != nil && recursive(f)
-		if leaf && f.Optional {
+		if leaf && f.optional() {
 			continue
 		}
-		if !f.Optional {
+		if !f.optional() {
 			required = append(required, "\""+tsStringLiteral(f.WireName)+"\"")
 		}
-		expr, note := r.arbFieldExpr(f, used)
+		expr, note := g.arbFieldExpr(f)
+		if fx, ok := fixed[f.WireName]; ok {
+			expr, note = fx, ""
+		}
 		switch {
-		case leaf && f.IsSlice:
+		case leaf && f.Kind == kindSlice:
 			expr, note = "fc.constant<"+f.TSType+">([])", ""
-		case leaf && f.IsMap:
+		case leaf && f.Kind == kindMap:
 			expr, note = "fc.constant<"+f.TSType+">({})", ""
 		}
 		if note != "" {
 			b.WriteString(indent + "    // " + note + "\n")
 		}
-		b.WriteString(indent + "    " + tsPropName(f.WireName) + ": " + expr + ",\n")
+		b.WriteString(indent + "    " + tsLiteralKey(f.WireName) + ": " + expr + ",\n")
 	}
 	b.WriteString(indent + "  },\n")
 	// An optional key is ABSENT from the generated record rather than present
@@ -766,44 +607,23 @@ func (r *Registry) arbRecord(ti *typeInfo, used *arbUses, indent string, recursi
 	return b.String()
 }
 
-// arbRefs lists the registered types a field's arbitrary ties to, following
-// arbFieldExpr's and arbElemExpr's routing exactly.
-func (r *Registry) arbRefs(f *fieldInfo) []string {
-	if f == nil || f.JSONString || f.IsRaw || f.IsIface || f.IsBytes {
-		return nil
-	}
-	if f.IsSlice || f.IsMap {
-		return r.arbElemRefs(f.Elem)
-	}
-	if r.isMapped(f.GoTypeName) || f.IsEnum {
-		return nil
-	}
-	if f.IsStruct && r.typeNames[f.GoTypeName] {
-		return []string{f.GoTypeName}
-	}
-	return nil
-}
-
-// arbElemRefs is arbRefs for a collection element, which arbElemExpr routes
-// before the raw and interface checks.
-func (r *Registry) arbElemRefs(elem *fieldInfo) []string {
+// arbRefs lists the registered types a field's arbitrary ties to.
+func (g *generator) arbRefs(f *fieldInfo) []string {
 	switch {
-	case elem == nil:
+	case f == nil:
 		return nil
-	case elem.IsSlice || elem.IsMap:
-		return r.arbElemRefs(elem.Elem)
-	case r.isMapped(elem.GoTypeName):
-		return nil
-	case r.typeNames[elem.GoTypeName]:
-		return []string{elem.GoTypeName}
+	case f.Kind == kindSlice || f.Kind == kindMap:
+		return g.arbRefs(f.Elem)
+	case f.Kind == kindStruct:
+		return []string{f.GoTypeName}
 	}
 	return nil
 }
 
 // arbReachability answers, for every registered type, which registered types
 // its arbitrary can reach through ties, unions included.
-func (r *Registry) arbReachability(engine *astEngine) map[string]map[string]bool {
-	edges := r.arbEdges(engine)
+func (g *generator) arbReachability(engine *astEngine) map[string]map[string]bool {
+	edges := g.arbEdges(engine)
 	reaches := make(map[string]map[string]bool, len(edges))
 	for _, ti := range engine.types {
 		reaches[ti.Name] = reachableFrom(edges[ti.Name], edges)
@@ -812,19 +632,11 @@ func (r *Registry) arbReachability(engine *astEngine) map[string]map[string]bool
 }
 
 // arbEdges maps each registered type to the types its arbitrary ties to.
-func (r *Registry) arbEdges(engine *astEngine) map[string][]string {
+func (g *generator) arbEdges(engine *astEngine) map[string][]string {
 	edges := make(map[string][]string, len(engine.types))
 	for _, ti := range engine.types {
-		if ti.Union != nil {
-			for _, v := range ti.Union.Variants {
-				if r.typeNames[v] {
-					edges[ti.Name] = append(edges[ti.Name], v)
-				}
-			}
-			continue
-		}
 		for i := range ti.Fields {
-			edges[ti.Name] = append(edges[ti.Name], r.arbRefs(&ti.Fields[i])...)
+			edges[ti.Name] = append(edges[ti.Name], g.arbRefs(&ti.Fields[i])...)
 		}
 	}
 	return edges
@@ -846,104 +658,85 @@ func reachableFrom(start []string, edges map[string][]string) map[string]bool {
 	return seen
 }
 
-// arbForUnion renders a //wiregen:union type's arbitrary: a draw from any
-// variant, which is exactly the emitted `export type X = A | B | C`. The
-// discriminator key is NOT injected — the variant interfaces do not declare it,
-// and a variant decoder drops an undeclared key, so a value carrying one could
-// not round-trip.
-func (r *Registry) arbForUnion(ti *typeInfo) string {
-	var variants []string
-	for _, v := range ti.Union.Variants {
-		if r.typeNames[v] {
-			variants = append(variants, "tie(\""+r.tsName(v)+"\")")
-		}
-	}
-	if len(variants) == 0 {
-		return "fc.constant(undefined as unknown as " + r.tsName(ti.Name) + ")"
-	}
-	return "fc.oneof(" + strings.Join(variants, ", ") + ")"
-}
-
-// arbFieldExpr returns the arbitrary expression for one struct field, and a note
-// to emit above it when the expression is opaque. The routing order mirrors
-// reqExpr's exactly, because the arbitrary has to satisfy the validator that
-// field's decoder emitted.
-func (r *Registry) arbFieldExpr(f *fieldInfo, used *arbUses) (expr, note string) {
-	if f.JSONString {
-		return arbString, ""
-	}
-	if f.IsRaw || f.IsIface {
-		return arbJSON, ""
-	}
-	if f.IsBytes {
-		return arbBase64, ""
-	}
-	if f.IsSlice {
-		return "fc.array(" + r.arbElemExpr(f.Elem, used) + ", " + arbArrayConstraints + ")", ""
-	}
-	if f.IsMap {
-		used.mapKey = true
-		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(f.Elem, used) + ", " + arbRecordConstraints + ")", ""
-	}
-	if r.isMapped(f.GoTypeName) {
+// arbFieldExpr returns the arbitrary expression for one struct field, and a
+// note to emit above it when the expression is opaque. Each draw satisfies
+// the validator the field's decoder emits.
+func (g *generator) arbFieldExpr(f *fieldInfo) (expr, note string) {
+	if f.Kind == kindMapped {
 		return arbMappedExpr(f.GoTypeName, f.TSType)
 	}
-	if f.IsEnum {
-		if _, ok := r.Enums[f.GoTypeName]; ok {
-			return arbName(r.tsEnumName(f.GoTypeName)), ""
-		}
-		return arbString, ""
-	}
-	if f.IsStruct && r.typeNames[f.GoTypeName] {
-		return "tie(\"" + r.tsName(f.GoTypeName) + "\")", ""
-	}
-	if f.TSType == tsUnknown {
-		return arbJSON, ""
-	}
-	return arbPrim(f.TSType), ""
+	return g.arbElemValue(f), ""
 }
 
-// arbElemExpr returns the arbitrary for a slice element or map value, recursing
-// through nested collections the way elemDecoderExpr does.
-func (r *Registry) arbElemExpr(elem *fieldInfo, used *arbUses) string {
-	if elem == nil {
+// arbElemExpr returns the arbitrary for a slice element or map value,
+// recursing through nested collections the way elemDecoderExpr does.
+func (g *generator) arbElemExpr(elem *fieldInfo) string {
+	if elem.nullElem() {
+		return "fc.option(" + g.arbElemValue(elem) + ", { nil: null })"
+	}
+	return g.arbElemValue(elem)
+}
+
+// arbElemValue is the arbitrary of f's non-null values.
+func (g *generator) arbElemValue(f *fieldInfo) string {
+	switch f.Kind {
+	case kindSlice:
+		return "fc.array(" + g.arbElemExpr(f.Elem) + ", " + arbArrayConstraintsFor(f.Bounds) + ")"
+	case kindMap:
+		return "fc.dictionary(fc.string(), " + g.arbElemExpr(f.Elem) + ", " + arbRecordConstraints + ")"
+	case kindMapped:
+		expr, _ := arbMappedExpr(f.GoTypeName, f.TSType)
+		return expr
+	case kindStruct:
+		return "tie(\"" + g.tsName(f.GoTypeName) + "\")"
+	case kindEnum:
+		return arbName(g.tsEnumName(f.GoTypeName))
+	case kindBytes:
+		return arbBase64
+	case kindRaw:
 		return arbJSON
 	}
-	if elem.IsSlice {
-		return "fc.array(" + r.arbElemExpr(elem.Elem, used) + ", " + arbArrayConstraints + ")"
+	if f.Bounds != nil {
+		return arbBoundedPrim(f.TSType, f.Bounds)
 	}
-	if elem.IsMap {
-		used.mapKey = true
-		return "fc.dictionary(arbMapKey, " + r.arbElemExpr(elem.Elem, used) + ", " + arbRecordConstraints + ")"
-	}
-	if r.isMapped(elem.GoTypeName) {
-		expr, _ := arbMappedExpr(elem.GoTypeName, elem.TSType)
-		return expr
-	}
-	if r.typeNames[elem.GoTypeName] {
-		return "tie(\"" + r.tsName(elem.GoTypeName) + "\")"
-	}
-	if _, ok := r.Enums[elem.GoTypeName]; ok {
-		return arbName(r.tsEnumName(elem.GoTypeName))
-	}
-	if elem.IsBytes {
-		return arbBase64
-	}
-	switch elem.TSType {
-	case tsString, tsNumber, tsBoolean:
-		return arbPrim(elem.TSType)
-	}
-	return arbJSON
+	return arbPrim(f.TSType)
 }
 
-// isMapped reports whether the consumer supplied a type or decoder mapping for
-// goTypeName, which is the one case wiregen has no shape for.
-func (r *Registry) isMapped(goTypeName string) bool {
-	if _, ok := r.DecoderMappings[goTypeName]; ok {
-		return true
+// arbArrayConstraintsFor is an array's fc constraints, within b's Count when it
+// declares one.
+func arbArrayConstraintsFor(b *bounds) string {
+	if b == nil || !b.hasCount {
+		return arbArrayConstraints
 	}
-	_, ok := r.TypeMappings[goTypeName]
-	return ok
+	hi := min(b.maxItems, max(b.minItems, 2))
+	return fmt.Sprintf(`{ minLength: %d, maxLength: %d, size: "small", depthIdentifier: %q }`, b.minItems, hi, arbDepthIdentifier)
+}
+
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER, the widest bound
+// fc.integer takes.
+const maxSafeInteger = 1<<53 - 1
+
+// arbBoundedPrim is the arbitrary of a primitive within b, so a drawn value
+// passes the bound checks the decoder emits.
+func arbBoundedPrim(tsType string, b *bounds) string {
+	if tsType != tsString {
+		if !b.hasRange {
+			return arbPrim(tsType)
+		}
+		lo, hi := max(b.min, -maxSafeInteger), min(b.max, maxSafeInteger)
+		return fmt.Sprintf("fc.integer({ min: %d, max: %d })", lo, hi)
+	}
+	expr := arbString
+	switch {
+	case b.pattern != "":
+		expr = "fc.stringMatching(new globalThis.RegExp(" + jsString(b.pattern) + ", \"u\"))"
+	case b.maxBytes > 0:
+		expr = fmt.Sprintf("fc.string({ maxLength: %d })", b.maxBytes)
+	}
+	if b.maxBytes > 0 {
+		expr = fmt.Sprintf("%s.filter((s) => new globalThis.TextEncoder().encode(s).length <= %d)", expr, b.maxBytes)
+	}
+	return expr
 }
 
 // arbMappedExpr renders a consumer-mapped type's arbitrary. A mapping to a
@@ -960,7 +753,7 @@ func arbMappedExpr(goTypeName, tsType string) (expr, note string) {
 		"opaque: " + goTypeName + " is consumer-mapped, so its shape is not in wiregen's model"
 }
 
-// arbPrim is the arbitrary for a primitive TS type, mirroring primHelperAST's
+// arbPrim is the arbitrary for a primitive TS type, mirroring primHelpers'
 // choice of validator: a number is finite, because reqNum rejects NaN and
 // Infinity (and JSON has no spelling for either).
 func arbPrim(tsType string) string {
@@ -978,129 +771,127 @@ func arbPrim(tsType string) string {
 // name and total over the registry: every registered type and enum has a row,
 // and a row exists for nothing else. A consumer asserts that set against its
 // exported decoders, which is what makes an orphaned arbitrary impossible.
-func (r *Registry) emitArbitraryTable(w *strings.Builder, engine *astEngine) {
+func (g *generator) emitArbitraryTable(w *strings.Builder, engine *astEngine) {
 	rows := map[string]bool{}
 	for _, ti := range engine.types {
-		rows[r.tsName(ti.Name)] = true
+		rows[g.tsName(ti.Name)] = true
 	}
-	for name := range r.Enums {
-		rows[r.tsEnumName(name)] = true
+	for name := range g.enums {
+		rows[g.tsEnumName(name)] = true
 	}
-	w.WriteString("export const ARBITRARY_BY_TYPE: Record<string, fc.Arbitrary<unknown>> = {\n")
+	w.WriteString("export const ARBITRARY_BY_TYPE: globalThis.Record<string, fc.Arbitrary<unknown>> = {\n")
 	for _, name := range slices.Sorted(maps.Keys(rows)) {
 		w.WriteString("  " + name + ": " + arbName(name) + ",\n")
 	}
 	w.WriteString("};\n")
 }
 
-// --- registry generation ---
+// --- events generation ---
 
-// generateRegistry writes the registry file. Callers (Generate,
-// GenerateRegistry) have already rejected a missing BusImport /
-// ValidatorsImport for the selected registry mode.
-func (r *Registry) generateRegistry(w *strings.Builder) {
-	w.WriteString(r.HeaderComment)
-
-	seen := map[string]bool{}
-	for _, e := range r.SSEEvents {
-		seen[r.sseDecoderName(e.TypeName)] = true
+// generateEvents writes the events module: the EventFrame union of every
+// event's name and data, EVENT_DECODERS with one decoder per name, and
+// decodeEventFrame, which decodes one frame and throws on an unknown name.
+func (g *generator) generateEvents(w *strings.Builder) {
+	w.WriteString(g.o.headerComment)
+	decoders := map[string]bool{}
+	types := map[string]bool{}
+	for _, ev := range g.Events {
+		decoders[g.decoderName(ev.Data.Name)] = true
+		types[g.tsName(ev.Data.Name)] = true
 	}
-	decoderImports := slices.Sorted(maps.Keys(seen))
+	w.WriteString("import { " + strings.Join(slices.Sorted(maps.Keys(decoders)), ", ") + " } from \"" + g.decodersSpec(g.o.eventsFilename) + "\";\n")
+	w.WriteString("import type { " + strings.Join(slices.Sorted(maps.Keys(types)), ", ") + " } from \"" + g.typesSpec(g.o.eventsFilename) + "\";\n")
+	w.WriteString("import type { Decoder } from \"" + g.validatorsSpec(g.o.eventsFilename) + "\";\n\n")
 
-	if r.SelfContainedRegistry {
-		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"" + moduleSpecifier(r.DecodersFilename) + "\";\n")
-		w.WriteString("import type { Decoder } from \"" + tsStringLiteral(r.ValidatorsImport) + "\";\n\n")
-		w.WriteString("const registry = new Map<string, Decoder<unknown>>();\n\n")
-		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
-		for _, e := range r.SSEEvents {
-			w.WriteString("  registry.set(\"" + tsStringLiteral(e.EventType) + "\", " + r.sseDecoderName(e.TypeName) + " as Decoder<unknown>);\n")
-		}
-		w.WriteString("}\n\n")
-		w.WriteString("export function getSSEDecoder(eventType: string): Decoder<unknown> | undefined {\n")
-		w.WriteString("  return registry.get(eventType);\n")
-		w.WriteString("}\n")
-	} else {
-		w.WriteString("import { " + r.RegisterFuncName + " } from \"" + tsStringLiteral(r.BusImport) + "\";\n")
-		w.WriteString("import { " + strings.Join(decoderImports, ", ") + " } from \"" + moduleSpecifier(r.DecodersFilename) + "\";\n\n")
-		w.WriteString("export function " + r.RegistryFuncName + "(): void {\n")
-		for _, e := range r.SSEEvents {
-			w.WriteString("  " + r.RegisterFuncName + "(\"" + tsStringLiteral(e.EventType) + "\", " + r.sseDecoderName(e.TypeName) + ");\n")
-		}
-		w.WriteString("}\n")
+	w.WriteString("export type EventFrame =")
+	for _, ev := range g.Events {
+		w.WriteString("\n  | { readonly event: \"" + tsStringLiteral(ev.Name) + "\"; readonly data: " + g.tsName(ev.Data.Name) + " }")
 	}
+	w.WriteString(";\n\n")
+	w.WriteString("export type EventName = EventFrame[\"event\"];\n\n")
+
+	w.WriteString("export const EVENT_DECODERS: { readonly [K in EventName]: Decoder<globalThis.Extract<EventFrame, { readonly event: K }>[\"data\"]> } = {\n")
+	for _, ev := range g.Events {
+		w.WriteString("  " + tsPropName(ev.Name) + ": " + g.decoderName(ev.Data.Name) + ",\n")
+	}
+	w.WriteString("};\n\n")
+
+	w.WriteString("export function decodeEventFrame(event: string, data: unknown): EventFrame {\n")
+	w.WriteString("  switch (event) {\n")
+	for _, ev := range g.Events {
+		lit := "\"" + tsStringLiteral(ev.Name) + "\""
+		w.WriteString("    case " + lit + ":\n      return { event: " + lit + ", data: " + g.decoderName(ev.Data.Name) + "(data) };\n")
+	}
+	w.WriteString("    default:\n      throw new globalThis.TypeError(`unknown event ${globalThis.JSON.stringify(event)}`);\n")
+	w.WriteString("  }\n")
+	w.WriteString("}\n")
 }
 
 // --- constants generation ---
 
-// generateConstants writes the constants file. Callers (Generate,
-// GenerateConstants) have already rejected constants whose TSName sanitizes
-// to an empty identifier via validateConstants.
-func (r *Registry) generateConstants(w *strings.Builder) {
-	w.WriteString(r.HeaderComment)
-	for _, c := range r.Constants {
+// generateConstants relies on validateConstants having refused a TSName
+// with no identifier character.
+func (g *generator) generateConstants(w *strings.Builder) {
+	w.WriteString(g.o.headerComment)
+	for _, c := range g.Constants {
 		fmt.Fprintf(w, "export const %s = %d;\n", sanitizeTSIdent(c.TSName), c.Value)
 	}
 }
 
 // --- validators module generation (library-owned) ---
 
-// generateValidators writes the library-owned validators module: the full set
-// of 11 runtime helper functions plus the Decoder<T> type alias that the
-// generated decoders import. The content is constant (it does not depend on
-// the registered types) — it is THE implementation of the "Validators
-// contract", carried under the same DO-NOT-EDIT banner as every other
-// generated file. Consumers regenerate it (via WithValidatorsFile or
-// GenerateValidators) instead of copying and owning it; the v1-era
-// copy-once-then-own starter posture is retired.
-func (r *Registry) generateValidators(w *strings.Builder) {
-	hc := r.HeaderComment
-	if hc == "" {
-		hc = defaultHeaderComment
-	}
-	w.WriteString(hc)
+// generateValidators writes the validators module: the runtime helpers and
+// the Decoder<T> alias the generated decoders import. Its content does not
+// depend on the registry.
+func (g *generator) generateValidators(w *strings.Builder) {
+	w.WriteString(g.o.headerComment)
 	w.WriteString(validatorsBody)
 }
 
-// validatorsBody is the working TypeScript implementation of the validators
-// contract: asObject, asArray, reqStr/reqNum/reqBool, optStr/optNum/optBool,
-// reqOneOf, decodeArray, decodeRecord (11 functions) plus
-// `export type Decoder<T> = (v: unknown) => T`.
+// validatorsBody is the validators module's TypeScript, the contract
+// docs/generated-files.md lists.
 const validatorsBody = `/** A decoder is a pure function that returns T or throws on shape mismatch. */
 export type Decoder<T> = (v: unknown) => T;
 
 function fail(path: string, msg: string): never {
-  throw new TypeError(` + "`${path}: ${msg}`" + `);
+  throw new globalThis.TypeError(` + "`${path}: ${msg}`" + `);
 }
 
 function typeName(v: unknown): string {
   if (v === null) {
     return "null";
   }
-  if (Array.isArray(v)) {
+  if (globalThis.Array.isArray(v)) {
     return "array";
   }
   return typeof v;
 }
 
+/** Reads o's own property key: an inherited one (constructor, toString,
+ *  __proto__) reads as absent, as JSON never sends it. */
+export function own(o: globalThis.Record<string, unknown>, key: string): unknown {
+  return globalThis.Object.hasOwn(o, key) ? o[key] : undefined;
+}
+
 /** Asserts v is a plain object (not array, not null). Returns the typed map. */
-export function asObject(v: unknown, path = "$"): Record<string, unknown> {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+export function asObject(v: unknown, path = "$"): globalThis.Record<string, unknown> {
+  if (typeof v !== "object" || v === null || globalThis.Array.isArray(v)) {
     fail(path, ` + "`expected object, got ${typeName(v)}`" + `);
   }
-  return v as Record<string, unknown>;
+  return v as globalThis.Record<string, unknown>;
 }
 
 /** Asserts v is an array; returns it. */
 export function asArray(v: unknown, path = "$"): unknown[] {
-  if (!Array.isArray(v)) {
+  if (!globalThis.Array.isArray(v)) {
     fail(path, ` + "`expected array, got ${typeName(v)}`" + `);
   }
   return v;
 }
 
 /** Required string field; throws if absent or not a string. */
-export function reqStr(o: Record<string, unknown>, key: string, path = "$"): string {
-  const v = o[key];
+export function reqStr(o: globalThis.Record<string, unknown>, key: string, path = "$"): string {
+  const v = own(o, key);
   if (typeof v !== "string") {
     fail(` + "`${path}.${key}`" + `, ` + "`expected string, got ${typeName(v)}`" + `);
   }
@@ -1108,17 +899,17 @@ export function reqStr(o: Record<string, unknown>, key: string, path = "$"): str
 }
 
 /** Required finite number field. NaN and Infinity are rejected. */
-export function reqNum(o: Record<string, unknown>, key: string, path = "$"): number {
-  const v = o[key];
-  if (typeof v !== "number" || !Number.isFinite(v)) {
+export function reqNum(o: globalThis.Record<string, unknown>, key: string, path = "$"): number {
+  const v = own(o, key);
+  if (typeof v !== "number" || !globalThis.Number.isFinite(v)) {
     fail(` + "`${path}.${key}`" + `, ` + "`expected number, got ${typeName(v)}`" + `);
   }
   return v;
 }
 
 /** Required boolean field. */
-export function reqBool(o: Record<string, unknown>, key: string, path = "$"): boolean {
-  const v = o[key];
+export function reqBool(o: globalThis.Record<string, unknown>, key: string, path = "$"): boolean {
+  const v = own(o, key);
   if (typeof v !== "boolean") {
     fail(` + "`${path}.${key}`" + `, ` + "`expected boolean, got ${typeName(v)}`" + `);
   }
@@ -1126,8 +917,8 @@ export function reqBool(o: Record<string, unknown>, key: string, path = "$"): bo
 }
 
 /** Optional string: undefined if key absent, otherwise must be a string. */
-export function optStr(o: Record<string, unknown>, key: string, path = "$"): string | undefined {
-  const v = o[key];
+export function optStr(o: globalThis.Record<string, unknown>, key: string, path = "$"): string | undefined {
+  const v = own(o, key);
   if (v === undefined) {
     return undefined;
   }
@@ -1138,20 +929,20 @@ export function optStr(o: Record<string, unknown>, key: string, path = "$"): str
 }
 
 /** Optional finite number. */
-export function optNum(o: Record<string, unknown>, key: string, path = "$"): number | undefined {
-  const v = o[key];
+export function optNum(o: globalThis.Record<string, unknown>, key: string, path = "$"): number | undefined {
+  const v = own(o, key);
   if (v === undefined) {
     return undefined;
   }
-  if (typeof v !== "number" || !Number.isFinite(v)) {
+  if (typeof v !== "number" || !globalThis.Number.isFinite(v)) {
     fail(` + "`${path}.${key}`" + `, ` + "`expected number or undefined, got ${typeName(v)}`" + `);
   }
   return v;
 }
 
 /** Optional boolean. */
-export function optBool(o: Record<string, unknown>, key: string, path = "$"): boolean | undefined {
-  const v = o[key];
+export function optBool(o: globalThis.Record<string, unknown>, key: string, path = "$"): boolean | undefined {
+  const v = own(o, key);
   if (v === undefined) {
     return undefined;
   }
@@ -1163,14 +954,14 @@ export function optBool(o: Record<string, unknown>, key: string, path = "$"): bo
 
 /** Required string with a fixed enum membership check. */
 export function reqOneOf<T extends string>(
-  o: Record<string, unknown>,
+  o: globalThis.Record<string, unknown>,
   key: string,
   vals: readonly T[],
   path = "$",
 ): T {
-  const v = o[key];
+  const v = own(o, key);
   if (typeof v !== "string" || !(vals as readonly string[]).includes(v)) {
-    fail(` + "`${path}.${key}`" + `, ` + "`expected one of ${vals.join(\"|\")}, got ${JSON.stringify(v)}`" + `);
+    fail(` + "`${path}.${key}`" + `, ` + "`expected one of ${vals.join(\"|\")}, got ${globalThis.JSON.stringify(v)}`" + `);
   }
   return v as T;
 }
@@ -1184,8 +975,8 @@ export function decodeArray<T>(v: unknown, decode: Decoder<T>, path = "$"): T[] 
     try {
       return decode(el);
     } catch (e) {
-      if (e instanceof TypeError) {
-        throw new TypeError(` + "`${path}[${String(i)}]: ${e.message}`" + `, { cause: e });
+      if (e instanceof globalThis.TypeError) {
+        throw new globalThis.TypeError(` + "`${path}[${globalThis.String(i)}]: ${e.message}`" + `, { cause: e });
       }
       throw e;
     }
@@ -1193,20 +984,75 @@ export function decodeArray<T>(v: unknown, decode: Decoder<T>, path = "$"): T[] 
 }
 
 /** Decodes a Record<string, T> by iterating own keys and applying
- *  decode to each value. Error messages include the key. */
-export function decodeRecord<T>(v: unknown, decode: Decoder<T>, path = "$"): Record<string, T> {
+ *  decode to each value. Error messages include the key. Every key,
+ *  "__proto__" included, becomes an own property. */
+export function decodeRecord<T>(v: unknown, decode: Decoder<T>, path = "$"): globalThis.Record<string, T> {
   const o = asObject(v, path);
-  const out: Record<string, T> = {};
-  for (const [k, val] of Object.entries(o)) {
-    try {
-      out[k] = decode(val);
-    } catch (e) {
-      if (e instanceof TypeError) {
-        throw new TypeError(` + "`${path}.${k}: ${e.message}`" + `, { cause: e });
+  return globalThis.Object.fromEntries(
+    globalThis.Object.entries(o).map(([k, val]): [string, T] => {
+      try {
+        return [k, decode(val)];
+      } catch (e) {
+        if (e instanceof globalThis.TypeError) {
+          throw new globalThis.TypeError(` + "`${path}.${k}: ${e.message}`" + `, { cause: e });
+        }
+        throw e;
       }
-      throw e;
+    }),
+  );
+}
+
+/** Refuses a present, non-null value at any of keys: a field another union
+ *  case owns. */
+export function refuseKeys(o: globalThis.Record<string, unknown>, keys: readonly string[], path = "$"): void {
+  for (const k of keys) {
+    const v = own(o, k);
+    if (v !== undefined && v !== null) {
+      fail(` + "`${path}.${k}`" + `, "not allowed in this case");
     }
   }
-  return out;
+}
+
+/** Checks v is an integer from lo to hi. */
+export function checkRange(v: number, lo: number, hi: number, path = "$"): number {
+  if (!globalThis.Number.isInteger(v) || v < lo || v > hi) {
+    fail(path, ` + "`expected an integer from ${globalThis.String(lo)} to ${globalThis.String(hi)}, got ${globalThis.String(v)}`" + `);
+  }
+  return v;
+}
+
+const utf8 = new globalThis.TextEncoder();
+
+/** Checks s is at most max bytes in UTF-8. */
+export function checkBytes<T extends string>(s: T, max: number, path = "$"): T {
+  const n = utf8.encode(s).length;
+  if (n > max) {
+    fail(path, ` + "`expected at most ${globalThis.String(max)} UTF-8 bytes, got ${globalThis.String(n)}`" + `);
+  }
+  return s;
+}
+
+const patterns = new globalThis.Map<string, globalThis.RegExp>();
+
+/** Checks s matches the ECMA-262 pattern, unanchored as JSON Schema's
+ *  pattern keyword is. */
+export function checkPattern<T extends string>(s: T, pattern: string, path = "$"): T {
+  let re = patterns.get(pattern);
+  if (re === undefined) {
+    re = new globalThis.RegExp(pattern, "u");
+    patterns.set(pattern, re);
+  }
+  if (!re.test(s)) {
+    fail(path, ` + "`expected a match of ${pattern}`" + `);
+  }
+  return s;
+}
+
+/** Checks a holds lo to hi items. */
+export function checkCount<T>(a: T[], lo: number, hi: number, path = "$"): T[] {
+  if (a.length < lo || a.length > hi) {
+    fail(path, ` + "`expected ${globalThis.String(lo)} to ${globalThis.String(hi)} items, got ${globalThis.String(a.length)}`" + `);
+  }
+  return a;
 }
 `

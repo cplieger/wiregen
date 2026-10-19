@@ -8,33 +8,26 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v3"
-	"github.com/cplieger/wiregen/v3/testdata/basic"
-	"github.com/cplieger/wiregen/v3/testdata/edges"
-	"github.com/cplieger/wiregen/v3/testdata/unions"
+	"github.com/cplieger/wiregen/v4"
+	"github.com/cplieger/wiregen/v4/testdata/basic"
+	"github.com/cplieger/wiregen/v4/testdata/edges"
+	"github.com/cplieger/wiregen/v4/testdata/unions"
 )
 
 // newArbRegistry is the arbitraries emitter's fixture: every field shape the
 // emitter routes on (enum, bytes, time, raw, interface, slice, map, embedded
 // struct, consumer-mapped type), the three recursion shapes (mutual cycle,
 // self slice, self map) and a discriminated union.
-func newArbRegistry() *wiregen.Registry {
-	r := wiregen.NewRegistry(
+func newArbRegistry() *testRegistry {
+	r := newTestRegistry(
 		wiregen.WithValidatorsImport("./test-validators.js"),
-		wiregen.WithBusImport("./test-bus.js"),
 	)
-	r.PackagePaths = []string{
-		"github.com/cplieger/wiregen/v3/testdata/basic",
-		"github.com/cplieger/wiregen/v3/testdata/edges",
-		"github.com/cplieger/wiregen/v3/testdata/unions",
-	}
 	r.Types = []wiregen.WireType{
 		wiregen.TypeRef[basic.Address](),
 		wiregen.TypeRef[basic.User](),
 		wiregen.TypeRef[basic.HasBytes](),
 		wiregen.TypeRef[basic.HasTime](),
 		wiregen.TypeRef[basic.HasRaw](),
-		wiregen.TypeRef[basic.HasInterface](),
 		wiregen.TypeRef[basic.HasMap](),
 		wiregen.TypeRef[basic.HasJSONString](),
 		wiregen.TypeRef[basic.WithEmbedding](),
@@ -48,26 +41,14 @@ func newArbRegistry() *wiregen.Registry {
 		wiregen.TypeRef[edges.SelfMapRequired](),
 		wiregen.TypeRef[edges.MapOfStructs](),
 		wiregen.TypeRef[edges.MapVal](),
-		wiregen.TypeRef[unions.CoverageEvent](),
-		wiregen.TypeRef[unions.NotifyEvent](),
-		wiregen.TypeRef[unions.ScanEvent](),
-		{PkgPath: "github.com/cplieger/wiregen/v3/testdata/unions", Name: "EventData"},
+		wiregen.TypeRef[unions.Holder](),
 	}
-	r.Enums = map[string]wiregen.EnumDef{
-		"Status":   {Values: []string{"active", "inactive", "banned"}},
-		"Priority": {Values: []string{"low", "medium", "high", "critical"}},
-	}
-	r.TypeMappings = map[string]string{
+	r.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status](), wiregen.StringEnum[basic.Priority](), wiregen.TextEnum[unions.Kind]()}
+	r.Unions = []wiregen.Union{timingUnion(), shapeUnion()}
+	r.Mappings = map[string]wiregen.Mapping{
 		// A mapping to a non-primitive TS type is the one shape wiregen has no
 		// model for, so it is the shape the fixture has to carry.
-		"github.com/cplieger/wiregen/v3/testdata/basic.CustomID": "Record<string, string>",
-	}
-	r.DiscriminatorMap = map[string]map[string]string{
-		"EventData": {
-			"coverage":   "CoverageEvent",
-			"notify":     "NotifyEvent",
-			"scan:start": "ScanEvent",
-		},
+		"github.com/cplieger/wiregen/v4/testdata/basic.CustomID": {TS: "Record<string, string>"},
 	}
 	return r
 }
@@ -76,15 +57,15 @@ func newArbRegistry() *wiregen.Registry {
 // contract determinism_test.go states for every other emitter: byte-identical
 // run to run, and independent of registration and map iteration order.
 func TestGenerateArbitraries_DeterministicAcrossRuns(t *testing.T) {
-	baseline := mustGen(t, newArbRegistry().GenerateArbitraries)
+	baseline := mustGen(t, newArbRegistry().arbitrariesFile)
 	for i := range 5 {
-		if got := mustGen(t, newArbRegistry().GenerateArbitraries); got != baseline {
+		if got := mustGen(t, newArbRegistry().arbitrariesFile); got != baseline {
 			t.Fatalf("GenerateArbitraries is not deterministic (iteration %d)", i)
 		}
 	}
 	shuffled := newArbRegistry()
 	slices.Reverse(shuffled.Types)
-	if got := mustGen(t, shuffled.GenerateArbitraries); got != baseline {
+	if got := mustGen(t, shuffled.arbitrariesFile); got != baseline {
 		t.Error("GenerateArbitraries output depends on type registration order")
 	}
 }
@@ -92,14 +73,14 @@ func TestGenerateArbitraries_DeterministicAcrossRuns(t *testing.T) {
 // TestGolden_Arbitraries pins the whole emitted artifact: the shape of a
 // generated file IS its contract, so a change to it is a reviewable diff.
 func TestGolden_Arbitraries(t *testing.T) {
-	got := mustGen(t, newArbRegistry().GenerateArbitraries)
+	got := mustGen(t, newArbRegistry().arbitrariesFile)
 	goldenCompare(t, "testdata/golden/arbitraries.gen.ts", got)
 }
 
 // arbitraryTableKeys returns the keys of the emitted ARBITRARY_BY_TYPE table.
 func arbitraryTableKeys(t *testing.T, out string) []string {
 	t.Helper()
-	const marker = "export const ARBITRARY_BY_TYPE: Record<string, fc.Arbitrary<unknown>> = {"
+	const marker = "export const ARBITRARY_BY_TYPE: globalThis.Record<string, fc.Arbitrary<unknown>> = {"
 	_, body, found := strings.Cut(out, marker)
 	if !found {
 		t.Fatalf("no ARBITRARY_BY_TYPE table in output:\n%s", out)
@@ -121,14 +102,17 @@ func arbitraryTableKeys(t *testing.T, out string) []string {
 // oracle, in both directions.
 func TestGenerateArbitraries_TableIsTotalOverTheRegistry(t *testing.T) {
 	r := newArbRegistry()
-	got := arbitraryTableKeys(t, mustGen(t, r.GenerateArbitraries))
+	got := arbitraryTableKeys(t, mustGen(t, r.arbitrariesFile))
 
 	want := make([]string, 0, len(r.Types)+len(r.Enums))
 	for _, wt := range r.Types {
 		want = append(want, wt.Name)
 	}
-	for name := range r.Enums {
-		want = append(want, name)
+	for _, ref := range r.Enums {
+		want = append(want, ref.Type.Name)
+	}
+	for _, u := range r.Unions {
+		want = append(want, u.Type.Name)
 	}
 	slices.Sort(want)
 	slices.Sort(got)
@@ -137,23 +121,17 @@ func TestGenerateArbitraries_TableIsTotalOverTheRegistry(t *testing.T) {
 	}
 }
 
-// TestGenerateArbitraries_EnumDrawsOnlyFromEnumDefValues: the generated enum
-// arbitrary is the registered value set and nothing else, so a value the
+// TestGenerateArbitraries_EnumDrawsOnlyDeclaredMembers: the generated enum
+// arbitrary is the declared constant set and nothing else, so a value the
 // decoder's reqOneOf would reject can never be drawn.
-func TestGenerateArbitraries_EnumDrawsOnlyFromEnumDefValues(t *testing.T) {
-	r := newArbRegistry()
-	out := mustGen(t, r.GenerateArbitraries)
-	for name, def := range r.Enums {
-		want := "export const arb" + name + ": fc.Arbitrary<" + name + "> = fc.constantFrom("
-		for i, v := range def.Values {
-			if i > 0 {
-				want += ", "
-			}
-			want += `"` + v + `"`
-		}
-		want += ");"
+func TestGenerateArbitraries_EnumDrawsOnlyDeclaredMembers(t *testing.T) {
+	out := mustGen(t, newArbRegistry().arbitrariesFile)
+	for _, want := range []string{
+		`export const arbStatus: fc.Arbitrary<Status> = fc.constantFrom("active", "inactive", "banned");`,
+		`export const arbPriority: fc.Arbitrary<Priority> = fc.constantFrom("low", "medium", "high", "critical");`,
+	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("missing enum arbitrary for %s.\nwant line: %s\ngot:\n%s", name, want, out)
+			t.Errorf("missing enum arbitrary %s\ngot:\n%s", want, out)
 		}
 	}
 }
@@ -163,7 +141,7 @@ func TestGenerateArbitraries_EnumDrawsOnlyFromEnumDefValues(t *testing.T) {
 // a const declared later — which would be a temporal-dead-zone ReferenceError at
 // module evaluation, not a type error any consumer's typecheck would catch.
 func TestGenerateArbitraries_RecursiveTypesAreTied(t *testing.T) {
-	out := mustGen(t, newArbRegistry().GenerateArbitraries)
+	out := mustGen(t, newArbRegistry().arbitrariesFile)
 	for _, want := range []string{
 		`tie("CycleB")`,
 		`tie("CycleA")`,
@@ -206,7 +184,7 @@ func letrecEntry(t *testing.T, out, name string) string {
 // at the cap, holds no recursive reference: a recursive collection is empty and
 // a recursive optional field is absent.
 func TestGenerateArbitraries_RecursionIsHardBounded(t *testing.T) {
-	out := mustGen(t, newArbRegistry().GenerateArbitraries)
+	out := mustGen(t, newArbRegistry().arbitrariesFile)
 	const capped = "fc.oneof(\n    { maxDepth: "
 	cases := []struct {
 		name string
@@ -242,7 +220,7 @@ func TestGenerateArbitraries_RecursionIsHardBounded(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"SelfSliceRequired": "children: fc.constant<SelfSliceRequired[]>([])",
-		"SelfMapRequired":   "children: fc.constant<Record<string, SelfMapRequired>>({})",
+		"SelfMapRequired":   "children: fc.constant<{ [key: string]: SelfMapRequired }>({})",
 	} {
 		if leaf := letrecEntry(t, out, name); !strings.Contains(leaf, want) {
 			t.Errorf("%s: a REQUIRED recursive collection must stay present and empty in the leaf (want %q); got:\n%s", name, want, leaf)
@@ -256,8 +234,7 @@ func TestGenerateArbitraries_RecursionIsHardBounded(t *testing.T) {
 }
 
 // TestGenerateArbitraries_NestedCollections: every nested level carries the
-// shared size bound, and a dictionary nested inside an array still draws its
-// keys from arbMapKey, so the module declares it even with no top-level map.
+// shared size bound.
 func TestGenerateArbitraries_NestedCollections(t *testing.T) {
 	const (
 		arr  = `{ maxLength: 2, size: "small", depthIdentifier: "wiregen" }`
@@ -276,22 +253,19 @@ func TestGenerateArbitraries_NestedCollections(t *testing.T) {
 		{
 			name: "SliceOfMap",
 			typ:  wiregen.TypeRef[edges.SliceOfMap](),
-			want: "items: fc.array(fc.dictionary(arbMapKey, fc.string(), " + dict + "), " + arr + "),",
+			want: "items: fc.array(fc.dictionary(fc.string(), fc.string(), " + dict + "), " + arr + "),",
 		},
 		{
 			name: "MapOfMap",
 			typ:  wiregen.TypeRef[edges.MapOfMap](),
-			want: "nested: fc.dictionary(arbMapKey, fc.dictionary(arbMapKey, fc.double({ noNaN: true, noDefaultInfinity: true }), " + dict + "), " + dict + "),",
+			want: "nested: fc.dictionary(fc.string(), fc.dictionary(fc.string(), fc.double({ noNaN: true, noDefaultInfinity: true }), " + dict + "), " + dict + "),",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := mustGen(t, edgesReg(tc.typ).GenerateArbitraries)
+			out := mustGen(t, edgesReg(tc.typ).arbitrariesFile)
 			if !strings.Contains(out, tc.want) {
 				t.Errorf("%s arbitrary missing %q\n--- output ---\n%s", tc.name, tc.want, out)
-			}
-			if strings.Contains(out, "arbMapKey") && !strings.Contains(out, "const arbMapKey: fc.Arbitrary<string>") {
-				t.Errorf("%s arbitraries reference arbMapKey without declaring it:\n%s", tc.name, out)
 			}
 		})
 	}
@@ -301,7 +275,7 @@ func TestGenerateArbitraries_NestedCollections(t *testing.T) {
 // itself through a slice of slices is depth-capped like a direct self slice,
 // and its leaf branch holds the collection empty.
 func TestGenerateArbitraries_RecursionThroughNestedSliceIsCapped(t *testing.T) {
-	out := mustGen(t, edgesReg(wiregen.TypeRef[edges.SelfNestedSlice]()).GenerateArbitraries)
+	out := mustGen(t, edgesReg(wiregen.TypeRef[edges.SelfNestedSlice]()).arbitrariesFile)
 	entry := letrecEntry(t, out, "SelfNestedSlice")
 	if !strings.HasPrefix(entry, "fc.oneof(\n    { maxDepth: 5, ") {
 		t.Fatalf("SelfNestedSlice arbitrary is not a depth-capped oneof; got:\n%s", entry)
@@ -318,31 +292,14 @@ func TestGenerateArbitraries_RecursionThroughNestedSliceIsCapped(t *testing.T) {
 	}
 }
 
-// TestGenerateArbitraries_UnionWithoutRegisteredVariants: a union none of whose
-// variants is registered has no value to draw, so its arbitrary is a typed
-// constant rather than an fc.oneof() with no arguments, which fast-check
-// rejects when the module is evaluated.
-func TestGenerateArbitraries_UnionWithoutRegisteredVariants(t *testing.T) {
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
-	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/unions"}
-	r.Types = []wiregen.WireType{{PkgPath: "github.com/cplieger/wiregen/v3/testdata/unions", Name: "EventData"}}
-	out := mustGen(t, r.GenerateArbitraries)
-	if got, want := letrecEntry(t, out, "EventData"), "fc.constant(undefined as unknown as EventData),"; got != want {
-		t.Errorf("EventData arbitrary = %q, want %q", got, want)
-	}
-}
-
 // TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed: the option is additive, so a
 // consumer that does not name the file gets exactly the files it got before.
 func TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed(t *testing.T) {
 	t.Run("named", func(t *testing.T) {
 		dir := t.TempDir()
 		r := newArbRegistry()
-		r.ArbitrariesFilename = "arbitraries.gen.ts"
-		if err := r.Generate(t.Context(), dir); err != nil {
+		r.opts = append(r.opts, wiregen.WithArbitrariesFile("arbitraries.gen.ts"))
+		if err := r.generate(t.Context(), dir); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.ReadFile(filepath.Join(dir, "arbitraries.gen.ts")); err != nil {
@@ -351,7 +308,7 @@ func TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed(t *testing.T) {
 	})
 	t.Run("unnamed", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := newArbRegistry().Generate(t.Context(), dir); err != nil {
+		if err := newArbRegistry().generate(t.Context(), dir); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.ReadFile(filepath.Join(dir, "arbitraries.gen.ts")); err == nil {
@@ -360,21 +317,23 @@ func TestGenerate_ArbitrariesFileWrittenOnlyWhenNamed(t *testing.T) {
 	})
 }
 
-// TestWithArbitrariesOptions: the two option knobs land on the registry, and the
-// import specifier defaults to fast-check.
+// TestWithArbitrariesOptions: the file lands at the named path importing the
+// named module, and the import specifier defaults to fast-check.
 func TestWithArbitrariesOptions(t *testing.T) {
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithArbitrariesFile("arbs.ts"),
-		wiregen.WithArbitrariesImport("fast-check/lite"),
-	)
-	if r.ArbitrariesFilename != "arbs.ts" {
-		t.Errorf("ArbitrariesFilename = %q, want %q", r.ArbitrariesFilename, "arbs.ts")
+	dir := t.TempDir()
+	r := newArbRegistry()
+	r.opts = append(r.opts, wiregen.WithArbitrariesFile("arbs.ts"), wiregen.WithArbitrariesImport("fast-check/lite"))
+	if err := r.generate(t.Context(), dir); err != nil {
+		t.Fatal(err)
 	}
-	if r.ArbitrariesImport != "fast-check/lite" {
-		t.Errorf("ArbitrariesImport = %q, want %q", r.ArbitrariesImport, "fast-check/lite")
+	named, err := os.ReadFile(filepath.Join(dir, "arbs.ts"))
+	if err != nil {
+		t.Fatalf("arbitraries file not written at arbs.ts: %v", err)
 	}
-	out := mustGen(t, newArbRegistry().GenerateArbitraries)
+	if !strings.Contains(string(named), `import fc from "fast-check/lite";`) {
+		t.Errorf("arbitraries import ignores WithArbitrariesImport; got:\n%s", firstLines(string(named), 5))
+	}
+	out := mustGen(t, newArbRegistry().arbitrariesFile)
 	if !strings.Contains(out, `import fc from "fast-check";`) {
 		t.Errorf("default arbitraries import is not fast-check; got:\n%s", firstLines(out, 5))
 	}

@@ -5,68 +5,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 var validTSIdent = regexp.MustCompile(`^[a-zA-Z_$][a-zA-Z0-9_$]*$`)
-
-func FuzzSanitizeVarName(f *testing.F) {
-	f.Add("hello_world")
-	f.Add("")
-	f.Add("__proto__")
-	f.Add("return")
-	f.Add("a_b_c")
-	f.Add("123bad")
-	f.Add("with spaces")
-	f.Add("foo\x00bar")
-
-	f.Fuzz(func(t *testing.T, input string) {
-		result := sanitizeVarName(input)
-		// Must be a valid TS identifier or empty
-		if result != "" && !validTSIdent.MatchString(result) {
-			t.Errorf("sanitizeVarName(%q) = %q, not a valid TS identifier", input, result)
-		}
-		// Idempotent
-		if result != "" {
-			again := sanitizeVarName(result)
-			if again != result {
-				t.Errorf("sanitizeVarName not idempotent: sanitizeVarName(%q)=%q, sanitizeVarName(%q)=%q", input, result, result, again)
-			}
-		}
-	})
-}
-
-func FuzzParseUnionDirective(f *testing.F) {
-	f.Add("// wiregen:union discriminator=type variants=A,B,C")
-	f.Add("// wiregen:union discriminator= variants=")
-	f.Add("// wiregen:union")
-	f.Add("// just a comment")
-	f.Add("")
-	f.Add("// wiregen:union discriminator=x variants=A,,B")
-	f.Add("// wiregen:union variants=X discriminator=y")
-	f.Add("// wiregen:union discriminator=a\x00b variants=C\nD")
-
-	f.Fuzz(func(t *testing.T, input string) {
-		cg := &ast.CommentGroup{
-			List: []*ast.Comment{{Text: input}},
-		}
-		ud := parseUnionDirective(cg)
-		if ud == nil {
-			return // ok=false, no union
-		}
-		// If returns a union, discriminator and variants must be non-empty
-		if ud.Discriminator == "" {
-			t.Errorf("parseUnionDirective(%q): ok but discriminator is empty", input)
-		}
-		if len(ud.Variants) == 0 {
-			t.Errorf("parseUnionDirective(%q): ok but variants is empty", input)
-		}
-		for _, v := range ud.Variants {
-			if strings.ContainsAny(v, ", ") {
-				t.Errorf("parseUnionDirective(%q): variant %q contains comma or space", input, v)
-			}
-		}
-	})
-}
 
 func FuzzCommentToJSDoc(f *testing.F) {
 	f.Add("// Hello world")
@@ -74,7 +16,6 @@ func FuzzCommentToJSDoc(f *testing.F) {
 	f.Add("// line with */")
 	f.Add("// nolint:foo")
 	f.Add("// go:generate something")
-	f.Add("// wiregen:union discriminator=x variants=A")
 	f.Add("// */ injection */")
 	f.Add("/* nested */ and more */")
 	f.Add("")
@@ -134,6 +75,9 @@ func FuzzEnumValueEscape(f *testing.F) {
 	})
 }
 
+// FuzzSSERegEventType checks that an event name the registry accepts is
+// emitted only inside balanced string literals, and that only a name an SSE
+// event field cannot carry is refused.
 func FuzzSSERegEventType(f *testing.F) {
 	f.Add("user.created")
 	f.Add(`"; import("evil"); "`)
@@ -143,44 +87,42 @@ func FuzzSSERegEventType(f *testing.F) {
 	f.Add("back\\slash")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		r := &Registry{
-			ValidatorsImport:      "./v.js",
-			SelfContainedRegistry: true,
-			SSEEvents:             []SSERegEntry{{EventType: input, TypeName: "Dummy"}},
-			RegistryFuncName:      "register",
-		}
-		r.typeNames = map[string]bool{"Dummy": true}
-		var w strings.Builder
-		r.generateRegistry(&w)
-		out := w.String()
-
-		// Every line with registry.set must have balanced quotes
-		for line := range strings.SplitSeq(out, "\n") {
-			if strings.Contains(line, "registry.set(") {
-				unescaped := 0
-				for i := 0; i < len(line); i++ {
-					if line[i] == '\\' {
-						i++
-						continue
-					}
-					if line[i] == '"' {
-						unescaped++
-					}
-				}
-				if unescaped%2 != 0 {
-					t.Errorf("unbalanced quotes for EventType=%q: line=%q", input, line)
-				}
+		reg := &Registry{Events: []Event{{Name: input, Data: WireType{PkgPath: "example.com/p", Name: "Dummy"}}}}
+		r, err := newGenerator(reg, []Option{WithTSDir(".")})
+		carriable := input != "" && !strings.ContainsAny(input, "\r\n") && utf8.ValidString(input)
+		if err != nil {
+			if carriable {
+				t.Errorf("newGenerator refused event name %q: %v", input, err)
 			}
+			return
 		}
-		// No raw newlines should appear inside a single line (output should not have broken lines)
-		if strings.ContainsAny(input, "\n\r") {
-			for line := range strings.SplitSeq(out, "\n") {
-				if strings.Contains(line, "registry.set(") && (strings.Contains(line, "\r") || strings.Contains(line, "\n")) {
-					t.Errorf("raw newline in output for EventType=%q", input)
-				}
+		if !carriable {
+			t.Fatalf("newGenerator accepted event name %q", input)
+		}
+		var w strings.Builder
+		r.generateEvents(&w)
+		for line := range strings.SplitSeq(w.String(), "\n") {
+			if unescapedQuotes(line)%2 != 0 {
+				t.Errorf("unbalanced quotes for event name %q: line=%q", input, line)
 			}
 		}
 	})
+}
+
+// unescapedQuotes counts the double quotes in line not escaped by a
+// backslash.
+func unescapedQuotes(line string) int {
+	n := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\\' {
+			i++
+			continue
+		}
+		if line[i] == '"' {
+			n++
+		}
+	}
+	return n
 }
 
 func FuzzWireConstTSName(f *testing.F) {
@@ -192,22 +134,17 @@ func FuzzWireConstTSName(f *testing.F) {
 	f.Add("foo\x00bar")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		r := &Registry{
-			Constants: []WireConst{{TSName: input, Value: 42}},
-		}
-		r.init()
-		// Cross-function consistency: validateConstants rejects exactly the
-		// TSNames that sanitize to an empty identifier (the silent-skip
-		// behavior this replaced); everything it accepts must emit a valid
-		// identifier below.
-		if err := r.validateConstants(); err != nil {
+		// validateConstants rejects exactly the TSNames that sanitize to an
+		// empty identifier; everything it accepts must emit a valid one below.
+		r, err := newGenerator(&Registry{Constants: []WireConst{{TSName: input, Value: 42}}}, []Option{WithTSDir(".")})
+		if err != nil {
 			if sanitizeTSIdent(input) != "" {
-				t.Errorf("validateConstants rejected sanitizable TSName %q: %v", input, err)
+				t.Errorf("newGenerator rejected sanitizable TSName %q: %v", input, err)
 			}
 			return
 		}
 		if sanitizeTSIdent(input) == "" {
-			t.Errorf("validateConstants accepted TSName %q that sanitizes to empty", input)
+			t.Errorf("newGenerator accepted TSName %q that sanitizes to empty", input)
 			return
 		}
 		var w strings.Builder
@@ -240,64 +177,13 @@ func FuzzImportPathInjection(f *testing.F) {
 		if input == "" {
 			t.Skip("empty import paths panic by design")
 		}
-		// Test ValidatorsImport in self-contained mode
-		r := &Registry{
-			ValidatorsImport:      input,
-			SelfContainedRegistry: true,
-			SSEEvents:             []SSERegEntry{{EventType: "test", TypeName: "Dummy"}},
-			RegistryFuncName:      "register",
-		}
-		r.typeNames = map[string]bool{"Dummy": true}
+		r := mustGenerator(t, &Registry{Events: []Event{{Name: "test", Data: WireType{PkgPath: "example.com/p", Name: "Dummy"}}}},
+			WithValidatorsImport(input))
 		var w strings.Builder
-		r.generateRegistry(&w)
-		out := w.String()
-
-		// The import line must have balanced quotes
-		for line := range strings.SplitSeq(out, "\n") {
-			if strings.Contains(line, "from \"") {
-				unescaped := 0
-				for i := 0; i < len(line); i++ {
-					if line[i] == '\\' {
-						i++
-						continue
-					}
-					if line[i] == '"' {
-						unescaped++
-					}
-				}
-				if unescaped%2 != 0 {
-					t.Errorf("unbalanced quotes for import path=%q: line=%q", input, line)
-				}
-			}
-		}
-
-		// Test BusImport in non-self-contained mode
-		r2 := &Registry{
-			BusImport:        input,
-			RegisterFuncName: "reg",
-			RegistryFuncName: "register",
-			SSEEvents:        []SSERegEntry{{EventType: "test", TypeName: "Dummy"}},
-		}
-		r2.typeNames = map[string]bool{"Dummy": true}
-		var w2 strings.Builder
-		r2.generateRegistry(&w2)
-		out2 := w2.String()
-
-		for line := range strings.SplitSeq(out2, "\n") {
-			if strings.Contains(line, "from \"") {
-				unescaped := 0
-				for i := 0; i < len(line); i++ {
-					if line[i] == '\\' {
-						i++
-						continue
-					}
-					if line[i] == '"' {
-						unescaped++
-					}
-				}
-				if unescaped%2 != 0 {
-					t.Errorf("unbalanced quotes for BusImport path=%q: line=%q", input, line)
-				}
+		r.generateEvents(&w)
+		for line := range strings.SplitSeq(w.String(), "\n") {
+			if strings.Contains(line, "from \"") && unescapedQuotes(line)%2 != 0 {
+				t.Errorf("unbalanced quotes for import path=%q: line=%q", input, line)
 			}
 		}
 	})
@@ -311,10 +197,7 @@ func FuzzPathNameOverride(f *testing.F) {
 	f.Add("quote\"break")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		r := &Registry{
-			PathNameOverride: map[string]string{"Test": input},
-		}
-		r.init()
+		r := mustGenerator(t, &Registry{PathNameOverride: map[string]string{"Test": input}})
 		result := r.pathName("Test")
 		// Must not contain raw newlines or unescaped quotes
 		if strings.ContainsAny(result, "\n\r") {
@@ -347,11 +230,10 @@ func FuzzEnumConstName(f *testing.F) {
 	f.Add("foo\x00bar")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		r := &Registry{
-			Enums:      map[string]EnumDef{"TestEnum": {Values: []string{"a", "b"}}},
+		r := mustGenerator(t, &Registry{
+			Enums:      []EnumRef{{Type: WireType{PkgPath: "example.com/p", Name: "TestEnum"}}},
 			EnumTSName: map[string]string{"TestEnum": input},
-		}
-		r.init()
+		})
 		result := r.tsEnumName("TestEnum")
 		if !validTSIdent.MatchString(result) {
 			t.Errorf("tsEnumName with override %q = %q, not a valid TS identifier", input, result)

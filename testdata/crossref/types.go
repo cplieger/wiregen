@@ -1,9 +1,8 @@
 // Package crossref provides fixtures exercising slice/map element
-// cross-reference resolution, recurring field-name doc scoping, and
-// unresolved-type fallback — the regressions fixed alongside these tests.
+// cross-reference resolution and recurring field-name doc scoping.
 package crossref
 
-import "github.com/cplieger/wiregen/v3/testdata/crossref/dep"
+import "github.com/cplieger/wiregen/v4/testdata/crossref/dep"
 
 // _ forces dep into the loaded package graph as a transitive dependency, so
 // the enum-discovery scoping test has a same-named (dep.Color) type to ignore.
@@ -17,6 +16,11 @@ type Item struct {
 
 // Status is a registered enum used as a slice element.
 type Status string
+
+const (
+	StatusOn  Status = "on"
+	StatusOff Status = "off"
+)
 
 // Container exercises slice-of-struct, map-of-struct, and slice-of-enum fields,
 // all of whose elements are registered types.
@@ -36,17 +40,6 @@ type Alpha struct {
 type Beta struct {
 	// BetaPathDoc marks beta.
 	Path string `json:"path"`
-}
-
-// Unregistered is intentionally NOT registered; fields of this type resolve to unknown.
-type Unregistered struct {
-	X int `json:"x"`
-}
-
-// Outer has a field of an unregistered struct type.
-type Outer struct {
-	Known  string       `json:"known"`
-	Nested Unregistered `json:"nested"`
 }
 
 // Color is a string enum with a const block — used to test enum-value

@@ -3,12 +3,15 @@ package wiregen_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
-	"github.com/cplieger/wiregen/v3"
-	"github.com/cplieger/wiregen/v3/testdata/basic"
-	"github.com/cplieger/wiregen/v3/testdata/edges"
-	"github.com/cplieger/wiregen/v3/testdata/unions"
+	"github.com/cplieger/wiregen/v4"
+	"github.com/cplieger/wiregen/v4/testdata/basic"
+	"github.com/cplieger/wiregen/v4/testdata/crossref"
+	"github.com/cplieger/wiregen/v4/testdata/edges"
+	"github.com/cplieger/wiregen/v4/testdata/unions"
 )
 
 // Tests that generated output is deterministic: byte-identical run to run, and
@@ -18,16 +21,10 @@ import (
 // times) for a rich registry and asserts byte identity, exercising the sorting
 // of types, enums, decoder imports, union variants, SSE events, and constants.
 func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
-	makeReg := func() *wiregen.Registry {
-		r := wiregen.NewRegistry(
+	makeReg := func() *testRegistry {
+		r := newTestRegistry(
 			wiregen.WithValidatorsImport("./v.js"),
-			wiregen.WithBusImport("./b.js"),
 		)
-		r.PackagePaths = []string{
-			"github.com/cplieger/wiregen/v3/testdata/basic",
-			"github.com/cplieger/wiregen/v3/testdata/edges",
-			"github.com/cplieger/wiregen/v3/testdata/unions",
-		}
 		r.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.User](),
 			wiregen.TypeRef[basic.Address](),
@@ -45,28 +42,19 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 			wiregen.TypeRef[edges.DeepA](),
 			wiregen.TypeRef[edges.DeepB](),
 			wiregen.TypeRef[edges.DeepC](),
-			wiregen.TypeRef[unions.CoverageEvent](),
-			wiregen.TypeRef[unions.NotifyEvent](),
-			wiregen.TypeRef[unions.ScanEvent](),
-			{PkgPath: "github.com/cplieger/wiregen/v3/testdata/unions", Name: "EventData"},
+			wiregen.TypeRef[unions.Holder](),
 		}
-		r.Enums = map[string]wiregen.EnumDef{
-			"Status":   {Values: []string{"active", "inactive", "banned"}},
-			"Priority": {Values: []string{"low", "medium", "high", "critical"}},
-			"MyEnum":   {Values: []string{"a", "b", "c"}},
+		r.Enums = []wiregen.EnumRef{
+			wiregen.StringEnum[basic.Status](),
+			wiregen.StringEnum[basic.Priority](),
+			wiregen.StringEnum[edges.MyEnum](),
+			wiregen.TextEnum[unions.Kind](),
 		}
-		r.DiscriminatorMap = map[string]map[string]string{
-			"EventData": {
-				"coverage":   "CoverageEvent",
-				"notify":     "NotifyEvent",
-				"scan:start": "ScanEvent",
-				"scan:done":  "ScanEvent",
-			},
-		}
-		r.SSEEvents = []wiregen.SSERegEntry{
-			{EventType: "notification", TypeName: "Notification"},
-			{EventType: "user:updated", TypeName: "User"},
-			{EventType: "coverage", TypeName: "CoverageEvent"},
+		r.Unions = []wiregen.Union{timingUnion(), shapeUnion()}
+		r.Events = []wiregen.Event{
+			r.event("notification", "Notification"),
+			r.event("user:updated", "User"),
+			r.event("holder", "Holder"),
 		}
 		r.Constants = []wiregen.WireConst{
 			{TSName: "MSG_A", Value: 1},
@@ -77,15 +65,15 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 	}
 
 	dir1 := t.TempDir()
-	if err := makeReg().Generate(t.Context(), dir1); err != nil {
+	if err := makeReg().generate(t.Context(), dir1); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 10 {
 		dir2 := t.TempDir()
-		if err := makeReg().Generate(t.Context(), dir2); err != nil {
+		if err := makeReg().generate(t.Context(), dir2); err != nil {
 			t.Fatal(err)
 		}
-		for _, f := range []string{"types.gen.ts", "decoders.gen.ts", "registry.gen.ts", "constants.gen.ts"} {
+		for _, f := range []string{"types.gen.ts", "decoders.gen.ts", "events.gen.ts", "constants.gen.ts"} {
 			b1, _ := os.ReadFile(filepath.Join(dir1, f))
 			b2, _ := os.ReadFile(filepath.Join(dir2, f))
 			if string(b1) != string(b2) {
@@ -98,14 +86,12 @@ func TestGenerate_DeterministicAcrossRuns(t *testing.T) {
 // TestGenerateTypes_TypeOrderIndependent: the types output does not depend on
 // the order types are registered in.
 func TestGenerateTypes_TypeOrderIndependent(t *testing.T) {
-	makeReg := func(types []wiregen.WireType) *wiregen.Registry {
-		r := wiregen.NewRegistry(
+	makeReg := func(types []wiregen.WireType) *testRegistry {
+		r := newTestRegistry(
 			wiregen.WithValidatorsImport("./v.js"),
-			wiregen.WithBusImport("./b.js"),
 		)
-		r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r.Types = types
-		r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
+		r.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status]()}
 		return r
 	}
 	order1 := []wiregen.WireType{
@@ -118,7 +104,7 @@ func TestGenerateTypes_TypeOrderIndependent(t *testing.T) {
 		wiregen.TypeRef[basic.User](),
 		wiregen.TypeRef[basic.Address](),
 	}
-	if mustGen(t, makeReg(order1).GenerateTypes) != mustGen(t, makeReg(order2).GenerateTypes) {
+	if mustGen(t, makeReg(order1).typesFile) != mustGen(t, makeReg(order2).typesFile) {
 		t.Error("types output differs with shuffled type registration order")
 	}
 }
@@ -126,66 +112,56 @@ func TestGenerateTypes_TypeOrderIndependent(t *testing.T) {
 // TestGenerateDecoders_TypeOrderIndependent: the decoder output (body + sorted
 // imports) does not depend on the order types are registered in.
 func TestGenerateDecoders_TypeOrderIndependent(t *testing.T) {
-	r := wiregen.NewRegistry(
+	r := newTestRegistry(
 		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
 	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 	r.Types = []wiregen.WireType{
 		wiregen.TypeRef[basic.User](),
 		wiregen.TypeRef[basic.Address](),
 		wiregen.TypeRef[basic.HasBytes](),
 		wiregen.TypeRef[basic.HasMap](),
 	}
-	r.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
-	baseline := mustGen(t, r.GenerateDecoders)
+	r.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status]()}
+	baseline := mustGen(t, r.decodersFile)
 
 	for range 20 {
-		r2 := wiregen.NewRegistry(
+		r2 := newTestRegistry(
 			wiregen.WithValidatorsImport("./v.js"),
-			wiregen.WithBusImport("./b.js"),
 		)
-		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
 		r2.Types = []wiregen.WireType{
 			wiregen.TypeRef[basic.HasMap](),
 			wiregen.TypeRef[basic.HasBytes](),
 			wiregen.TypeRef[basic.Address](),
 			wiregen.TypeRef[basic.User](),
 		}
-		r2.Enums = map[string]wiregen.EnumDef{"Status": {Values: []string{"active"}}}
-		if mustGen(t, r2.GenerateDecoders) != baseline {
+		r2.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status]()}
+		if mustGen(t, r2.decodersFile) != baseline {
 			t.Fatal("decoder imports/body not deterministic when type order changes")
 		}
 	}
 }
 
-// TestGenerateTypes_EnumOrderIndependent: enum declarations sort stably
-// regardless of Go map iteration order.
+// TestGenerateTypes_EnumOrderIndependent: enum declarations sort by TS name
+// whatever order the enums are registered in.
 func TestGenerateTypes_EnumOrderIndependent(t *testing.T) {
-	r := wiregen.NewRegistry(
-		wiregen.WithValidatorsImport("./v.js"),
-		wiregen.WithBusImport("./b.js"),
-	)
-	r.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
-	r.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
-	r.Enums = map[string]wiregen.EnumDef{}
-	for _, name := range []string{"Zebra", "Alpha", "Mango", "Beta", "Delta", "Charlie", "Echo", "Foxtrot"} {
-		r.Enums[name] = wiregen.EnumDef{Values: []string{"v1", "v2"}}
+	refs := []wiregen.EnumRef{
+		wiregen.StringEnum[basic.Status](),
+		wiregen.StringEnum[edges.MyEnum](),
+		wiregen.StringEnum[crossref.Color](),
+		wiregen.StringEnum[basic.Priority](),
 	}
-	baseline := mustGen(t, r.GenerateTypes)
-	for range 20 {
-		r2 := wiregen.NewRegistry(
-			wiregen.WithValidatorsImport("./v.js"),
-			wiregen.WithBusImport("./b.js"),
-		)
-		r2.PackagePaths = []string{"github.com/cplieger/wiregen/v3/testdata/basic"}
-		r2.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
-		r2.Enums = map[string]wiregen.EnumDef{}
-		for _, name := range []string{"Foxtrot", "Echo", "Charlie", "Delta", "Beta", "Mango", "Alpha", "Zebra"} {
-			r2.Enums[name] = wiregen.EnumDef{Values: []string{"v1", "v2"}}
-		}
-		if mustGen(t, r2.GenerateTypes) != baseline {
-			t.Fatal("enum ordering is non-deterministic")
-		}
+	gen := func(refs []wiregen.EnumRef) string {
+		r := newTestRegistry()
+		r.Enums = refs
+		return mustGen(t, r.typesFile)
+	}
+	baseline := gen(refs)
+	reversed := slices.Clone(refs)
+	slices.Reverse(reversed)
+	if gen(reversed) != baseline {
+		t.Error("enum output depends on registration order")
+	}
+	if c, m := strings.Index(baseline, "export type Color"), strings.Index(baseline, "export type MyEnum"); c < 0 || m < c {
+		t.Errorf("enums not sorted by TS name:\n%s", baseline)
 	}
 }

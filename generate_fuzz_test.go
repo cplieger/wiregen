@@ -31,8 +31,8 @@ func FuzzGenerate(f *testing.F) {
 			wiregen.TypeRef[basic.Notification](),
 		}
 		r.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status]()}
-		// typeName is any string, resolved in basic's package: an unlisted
-		// struct, an enum, a non-struct or nothing.
+		// typeName is any string, resolved in basic's package: a listed or
+		// unlisted struct, an enum, a non-struct or nothing.
 		r.Events = []wiregen.Event{{Name: eventType, Data: wiregen.WireType{PkgPath: address.PkgPath, Name: typeName}}}
 		r.Constants = []wiregen.WireConst{{TSName: "X", Value: 42}}
 

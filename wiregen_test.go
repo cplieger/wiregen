@@ -114,8 +114,8 @@ func TestGenerateEvents(t *testing.T) {
 }
 
 // TestGenerateEvents_DataTypeResolvedAsIfInTypes pins Registry's contract
-// that an event's data type is generated as if listed in Types, so any name
-// the package declares reaches the same resolution and refusals.
+// that an event's data type is generated as if listed in Types, so any data
+// type name reaches the same resolution and refusals.
 func TestGenerateEvents_DataTypeResolvedAsIfInTypes(t *testing.T) {
 	pkg := wiregen.TypeRef[basic.Address]().PkgPath
 	cases := []struct {
@@ -136,10 +136,23 @@ func TestGenerateEvents_DataTypeResolvedAsIfInTypes(t *testing.T) {
 		})
 	}
 	t.Run("an unlisted struct", func(t *testing.T) {
-		r := newTestRegistry()
-		r.Events = []wiregen.Event{{Name: "e", Data: wiregen.WireType{PkgPath: pkg, Name: "Address"}}}
-		if out := mustGen(t, r.typesFile); !strings.Contains(out, "export interface Address {") {
-			t.Errorf("types file lacks the event's data type Address, got:\n%s", out)
+		events := []wiregen.Event{{Name: "e", Data: wiregen.WireType{PkgPath: pkg, Name: "Address"}}}
+		unlisted := newTestRegistry()
+		unlisted.Events = events
+		listed := newTestRegistry()
+		listed.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+		listed.Events = events
+		files := []struct {
+			name             string
+			unlisted, listed func(context.Context) (string, error)
+		}{
+			{"types", unlisted.typesFile, listed.typesFile},
+			{"decoders", unlisted.decodersFile, listed.decodersFile},
+		}
+		for _, fc := range files {
+			if got, want := mustGen(t, fc.unlisted), mustGen(t, fc.listed); got != want {
+				t.Errorf("%s file with Address only as event data differs from Address in Types:\ngot:\n%s\nwant:\n%s", fc.name, got, want)
+			}
 		}
 	})
 }

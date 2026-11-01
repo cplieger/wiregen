@@ -113,6 +113,50 @@ func TestGenerateEvents(t *testing.T) {
 	}
 }
 
+// TestGenerateEvents_DataTypeResolvedAsIfInTypes pins Registry's contract
+// that an event's data type is generated as if listed in Types, so any data
+// type name reaches the same resolution and refusals.
+func TestGenerateEvents_DataTypeResolvedAsIfInTypes(t *testing.T) {
+	pkg := wiregen.TypeRef[basic.Address]().PkgPath
+	cases := []struct {
+		name, typeName, wantErr string
+	}{
+		{"missing from its package", "Missing", "type Missing not found"},
+		{"a registered enum's name", "Status", "is registered twice"},
+		{"a string type", "Priority", "is not a struct"},
+		{"a constant", "StatusActive", "StatusActive in " + pkg + " is not a type"},
+		{"no name", "", "names no package-level type"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			r.Enums = []wiregen.EnumRef{wiregen.StringEnum[basic.Status]()}
+			r.Events = []wiregen.Event{{Name: "e", Data: wiregen.WireType{PkgPath: pkg, Name: tc.typeName}}}
+			requireGenerateError(t, r, tc.wantErr)
+		})
+	}
+	t.Run("an unlisted struct", func(t *testing.T) {
+		events := []wiregen.Event{{Name: "e", Data: wiregen.WireType{PkgPath: pkg, Name: "Address"}}}
+		unlisted := newTestRegistry()
+		unlisted.Events = events
+		listed := newTestRegistry()
+		listed.Types = []wiregen.WireType{wiregen.TypeRef[basic.Address]()}
+		listed.Events = events
+		files := []struct {
+			name             string
+			unlisted, listed func(context.Context) (string, error)
+		}{
+			{"types", unlisted.typesFile, listed.typesFile},
+			{"decoders", unlisted.decodersFile, listed.decodersFile},
+		}
+		for _, fc := range files {
+			if got, want := mustGen(t, fc.unlisted), mustGen(t, fc.listed); got != want {
+				t.Errorf("%s file with Address only as event data differs from Address in Types:\ngot:\n%s\nwant:\n%s", fc.name, got, want)
+			}
+		}
+	})
+}
+
 func TestGenerateToDir(t *testing.T) {
 	r := newRegistry()
 	dir := t.TempDir()

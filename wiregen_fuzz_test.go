@@ -174,9 +174,6 @@ func FuzzImportPathInjection(f *testing.F) {
 	f.Add("quote\"break")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		if input == "" {
-			t.Skip("empty import paths panic by design")
-		}
 		r := mustGenerator(t, &Registry{Events: []Event{{Name: "test", Data: WireType{PkgPath: "example.com/p", Name: "Dummy"}}}},
 			WithValidatorsImport(input))
 		var w strings.Builder

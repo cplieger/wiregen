@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -14,42 +15,14 @@ import (
 // in ast_engine.go. Shared helpers and package-path constants live in
 // wiregen_internal_test.go.
 
-// TestParseUnionDirective_requiresVariants pins parseUnionDirective's guard
-// that a //wiregen:union directive yields a union only when it has both a
-// discriminator and at least one non-empty variant.
-func TestParseUnionDirective_requiresVariants(t *testing.T) {
-	noVariants := &ast.CommentGroup{List: []*ast.Comment{
-		{Text: "//wiregen:union discriminator=type variants="},
-	}}
-	if got := parseUnionDirective(noVariants); got != nil {
-		t.Errorf("parseUnionDirective(discriminator-only) = %+v, want nil", got)
-	}
-
-	withVariants := &ast.CommentGroup{List: []*ast.Comment{
-		{Text: "//wiregen:union discriminator=type variants=A,B"},
-	}}
-	got := parseUnionDirective(withVariants)
-	if got == nil {
-		t.Fatalf("parseUnionDirective(with variants) = nil, want non-nil")
-	}
-	if got.Discriminator != "type" || len(got.Variants) != 2 ||
-		got.Variants[0] != "A" || got.Variants[1] != "B" {
-		t.Errorf("parseUnionDirective(with variants) = %+v, want {type,[A B]}", got)
-	}
-}
-
-// TestNewASTEngine_discoversEnumsWithoutRegisteredTypes pins that the engine
-// still loads packages and auto-discovers enum values when only PackagePaths
-// is set (no registered Types) — the early-return guard must require BOTH
-// Types and PackagePaths to be empty.
+// TestNewASTEngine_discoversEnumsWithoutRegisteredTypes pins that an enum
+// registered with no type loads its own package and discovers its members.
 func TestNewASTEngine_discoversEnumsWithoutRegisteredTypes(t *testing.T) {
 	r := &Registry{}
-	r.PackagePaths = []string{crossrefPkg}
-	r.Enums = map[string]EnumDef{"Color": {}} // empty Values -> discover
+	r.Enums = []EnumRef{{Type: WireType{PkgPath: crossrefPkg, Name: "Color"}}}
 
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 	checkContains(t, "enum-discovery", out, `export type Color = "red" | "green" | "blue";`)
-	checkNotContains(t, "enum-discovery", out, "export type Color = ;")
 }
 
 // TestResolveStructFields_dashCommaFieldEmitted pins that a field tagged
@@ -58,10 +31,9 @@ func TestNewASTEngine_discoversEnumsWithoutRegisteredTypes(t *testing.T) {
 // emitted as a quoted property name ("-": ...); the bare form (-: ...) would be
 // invalid TypeScript.
 func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
-	r.PackagePaths = []string{edgesPkg}
+	r := &Registry{}
 	r.Types = []WireType{{PkgPath: edgesPkg, Name: "DashComma"}}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 
 	checkContains(t, "dash-comma", out, "export interface DashComma {")
 	checkContains(t, "dash-comma", out, "  name: string;")
@@ -73,13 +45,12 @@ func TestResolveStructFields_dashCommaFieldEmitted(t *testing.T) {
 // that field's own declaration, not the first same-named field elsewhere in
 // the package: Alpha.path and Beta.path must carry their own docs.
 func TestFieldDoc_scopedToDeclaringField(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js"}
-	r.PackagePaths = []string{crossrefPkg}
+	r := &Registry{}
 	r.Types = []WireType{
 		{PkgPath: crossrefPkg, Name: "Alpha"},
 		{PkgPath: crossrefPkg, Name: "Beta"},
 	}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 
 	checkContains(t, "field-doc", out,
 		"export interface Alpha {\n  /** AlphaPathDoc marks alpha. */\n  path: string;\n}")
@@ -88,19 +59,16 @@ func TestFieldDoc_scopedToDeclaringField(t *testing.T) {
 }
 
 // TestTypeKey_fullyQualifiesNamedType pins that typeKey returns the full
-// "pkgpath.Name" for a named type with a package: a TypeMapping keyed by the
-// SHORT name must therefore NOT match, so the field falls through to unknown.
+// "pkgpath.Name" for a named type with a package: a mapping keyed by the
+// SHORT name must therefore NOT match, so the field is refused as unmapped.
 func TestTypeKey_fullyQualifiesNamedType(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
-	r.PackagePaths = []string{basicPkg}
+	r := &Registry{}
 	r.Types = []WireType{{PkgPath: basicPkg, Name: "HasCustomMapped"}}
-	// Keyed by the SHORT name; the full typeKey never matches, so the field
-	// resolves to unknown rather than the short-keyed mapping.
-	r.TypeMappings = map[string]string{"CustomID": "ShortMapped"}
-	out := mustGen(t, r.GenerateTypes)
-
-	checkContains(t, "typekey", out, "id: unknown;")
-	checkNotContains(t, "typekey", out, "ShortMapped")
+	r.Mappings = map[string]Mapping{"CustomID": {TS: "ShortMapped"}}
+	_, err := r.typesFile(t.Context())
+	if err == nil || !strings.Contains(err.Error(), basicPkg+".HasCustomMapped.ID: struct "+basicPkg+".CustomID is neither registered nor mapped") {
+		t.Errorf("a short-keyed mapping matched or the refusal is missing: %v", err)
+	}
 }
 
 // TestPackagesError_formatsErrorsWithAndWithoutPosition pins how packagesError
@@ -128,25 +96,20 @@ func TestPackagesError_formatsErrorsWithAndWithoutPosition(t *testing.T) {
 	}
 }
 
-// TestResolveTaggedField_taggedFieldDominatesUntaggedAtEqualDepth pins that
-// resolveTaggedField marks whether a field's wire name came from an explicit
+// TestResolveNamedField_taggedFieldDominatesUntaggedAtEqualDepth pins that
+// resolveNamedField marks whether a field's wire name came from an explicit
 // json tag, and that encoding/json's equal-depth promotion tiebreak then keeps
 // the tagged field over an untagged one. Two fields are promoted at the same
 // depth under the same wire name "shared": a tagged string field and an
 // untagged number field. The tagged field must win, so the surviving field
-// carries the string type. (Existing fixture coverage only counts the survivor,
-// not which field's type wins, so the tag-detection here is asserted via the
-// distinct survivor type.)
-func TestResolveTaggedField_taggedFieldDominatesUntaggedAtEqualDepth(t *testing.T) {
-	e := &astEngine{r: &Registry{}}
+// carries the string type.
+func TestResolveNamedField_taggedFieldDominatesUntaggedAtEqualDepth(t *testing.T) {
+	e := &astEngine{gen: mustGenerator(t, &Registry{})}
 	tagged := types.NewField(token.NoPos, nil, "Renamed", types.Typ[types.String], false)
 	untagged := types.NewField(token.NoPos, nil, "shared", types.Typ[types.Int], false)
 
-	tf, ok1 := e.resolveTaggedField(tagged, `json:"shared"`, 1, nil, nil)
-	uf, ok2 := e.resolveTaggedField(untagged, "", 1, nil, nil)
-	if !ok1 || !ok2 {
-		t.Fatalf("resolveTaggedField ok = (%v, %v), want (true, true)", ok1, ok2)
-	}
+	tf := e.resolveNamedField(tagged, parseJSONTag(`json:"shared"`), 1, nil, nil)
+	uf := e.resolveNamedField(untagged, parseJSONTag(""), 1, nil, nil)
 
 	got := dedupJSONFields([]fieldInfo{tf, uf})
 	if len(got) != 1 {

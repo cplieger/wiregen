@@ -13,38 +13,20 @@ import (
 // TS-name order.
 func TestGenerateTypes_enumSortOrder(t *testing.T) {
 	r := &Registry{}
-	r.Enums = map[string]EnumDef{
-		"AaaEnum": {Values: []string{"a"}},
-		"ZzzEnum": {Values: []string{"z"}},
+	r.Enums = []EnumRef{
+		{Type: WireType{PkgPath: basicPkg, Name: "Status"}},
+		{Type: WireType{PkgPath: basicPkg, Name: "Priority"}},
 	}
-	out := mustGen(t, r.GenerateTypes)
+	out := mustGen(t, r.typesFile)
 
-	ai := strings.Index(out, "export type AaaEnum")
-	zi := strings.Index(out, "export type ZzzEnum")
-	if ai < 0 || zi < 0 {
-		t.Fatalf("missing enum declarations; AaaEnum@%d ZzzEnum@%d\n%s", ai, zi, out)
+	pi := strings.Index(out, "export type Priority")
+	si := strings.Index(out, "export type Status")
+	if pi < 0 || si < 0 {
+		t.Fatalf("missing enum declarations; Priority@%d Status@%d\n%s", pi, si, out)
 	}
-	if ai >= zi {
-		t.Errorf("enum order: AaaEnum@%d should precede ZzzEnum@%d (ascending)", ai, zi)
+	if pi >= si {
+		t.Errorf("enum order: Priority@%d should precede Status@%d (ascending)", pi, si)
 	}
-}
-
-// TestGenerateTypes_unionDocEmitted pins that a documented union type emits its
-// JSDoc before the `export type` line.
-func TestGenerateTypes_unionDocEmitted(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
-	r.PackagePaths = []string{unionsPkg}
-	r.Types = []WireType{
-		{PkgPath: unionsPkg, Name: "CoverageEvent"},
-		{PkgPath: unionsPkg, Name: "NotifyEvent"},
-		{PkgPath: unionsPkg, Name: "ScanEvent"},
-		{PkgPath: unionsPkg, Name: "EventData"},
-	}
-	out := mustGen(t, r.GenerateTypes)
-
-	checkContains(t, "union-doc", out,
-		"export type EventData = CoverageEvent | NotifyEvent | ScanEvent;")
-	checkContains(t, "union-doc", out, "EventData is a sealed interface for event payloads")
 }
 
 // TestGenerateDecoders_emptyRegistryImports pins the import block for the
@@ -52,10 +34,10 @@ func TestGenerateTypes_unionDocEmitted(t *testing.T) {
 // helper list, no `import type` line, and no enum-const block are emitted, and
 // the output ends with a single trailing blank line after the import.
 func TestGenerateDecoders_emptyRegistryImports(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js"}
-	out := mustGen(t, r.GenerateDecoders)
+	r := &Registry{}
+	out := mustGen(t, r.decodersFile)
 
-	checkContains(t, "helpers-import", out, `import { type Decoder } from "./v.js";`)
+	checkContains(t, "helpers-import", out, `import { type Decoder } from "./validators.gen.js";`)
 	checkNotContains(t, "types-import", out, "import type {")
 	if !strings.HasSuffix(out, "\";\n\n") {
 		t.Errorf("empty-registry decoder output should end with import + blank line\n--- output ---\n%q", out)
@@ -66,27 +48,15 @@ func TestGenerateDecoders_emptyRegistryImports(t *testing.T) {
 // a struct with no fields emits `= {};` (empty literal) while a struct with
 // only optional fields emits the populated `= {\n  };` block.
 func TestEmitDecoder_structLiteralShape(t *testing.T) {
-	r := &Registry{ValidatorsImport: "./v.js", BusImport: "./b.js"}
-	r.PackagePaths = []string{edgesPkg}
+	r := &Registry{}
 	r.Types = []WireType{
 		{PkgPath: edgesPkg, Name: "EmptyStruct"},
 		{PkgPath: edgesPkg, Name: "AllOptional"},
 	}
-	out := mustGen(t, r.GenerateDecoders)
+	out := mustGen(t, r.decodersFile)
 
 	checkContains(t, "empty-struct", out, "const out: EmptyStruct = {};")
 	checkContains(t, "all-optional", out, "const out: AllOptional = {\n  };")
-}
-
-// TestEmitEnumTypes_zeroValuesEmitsNever pins the zero-values guard in
-// emitEnumTypes: a registered enum that resolves to no values emits the bottom
-// type `= never;` (syntactically valid TS) rather than the invalid `= ;`.
-func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
-	r := &Registry{}
-	r.Enums = map[string]EnumDef{"Phantom": {}}
-	out := mustGen(t, r.GenerateTypes)
-	checkContains(t, "never-enum", out, "export type Phantom = never;")
-	checkNotContains(t, "never-enum", out, "export type Phantom = ;")
 }
 
 // TestEmitOptionalField_nonIdentWireNameUsesBracketRef pins the
@@ -95,28 +65,10 @@ func TestEmitEnumTypes_zeroValuesEmitsNever(t *testing.T) {
 // bracket access (out["content-type"] = ...) so the generated decoder stays
 // valid TypeScript.
 func TestEmitOptionalField_nonIdentWireNameUsesBracketRef(t *testing.T) {
-	r := &Registry{}
+	r := mustGenerator(t, &Registry{})
 	var w strings.Builder
-	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
+	r.emitOptionalField(&w, &fieldInfo{WireName: "content-type", TSType: tsString, Kind: kindString, Omittable: true}, "$.x", newUsedIdents())
 	out := w.String()
-	checkContains(t, "opt-nonident", out, `const contenttype = o["content-type"] === null ? undefined : optStr(o, "content-type", "$.x");`)
-	checkContains(t, "opt-nonident", out, `if (contenttype !== undefined) out["content-type"] = contenttype;`)
-}
-
-// TestEmitOptionalField_emptyVarNameFallsBackToFieldVal pins the localVarName
-// empty-guard reached via emitOptionalField: an optional field whose JSON key
-// sanitizes to "" (e.g. json:"_", which strings.Split on "_" yields two empty
-// parts) must not emit an empty `const  = ...` identifier with an empty RHS.
-// localVarName substitutes the fixed "fieldVal" name so the generated decoder
-// stays valid TypeScript. The member-access target (out._) is unaffected — a
-// lone underscore is itself a valid TS identifier — so only the local name is
-// repaired.
-func TestEmitOptionalField_emptyVarNameFallsBackToFieldVal(t *testing.T) {
-	r := &Registry{}
-	var w strings.Builder
-	r.emitOptionalField(&w, &fieldInfo{WireName: "_", TSType: tsString, Optional: true}, "$.x", newUsedIdents())
-	out := w.String()
-	checkContains(t, "opt-empty-varname", out, `const fieldVal = o["_"] === null ? undefined : optStr(o, "_", "$.x");`)
-	checkContains(t, "opt-empty-varname", out, `if (fieldVal !== undefined) out._ = fieldVal;`)
-	checkNotContains(t, "opt-empty-varname", out, "const  =")
+	checkContains(t, "opt-nonident", out, `const $v = own(o, "content-type");`)
+	checkContains(t, "opt-nonident", out, `if ($v !== undefined && $v !== null) out["content-type"] = reqStr(o, "content-type", "$.x");`)
 }

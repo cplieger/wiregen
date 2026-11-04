@@ -60,11 +60,6 @@ type RawSlice struct {
 	Items []json.RawMessage `json:"items"`
 }
 
-// InterfaceSlice has []interface{}.
-type InterfaceSlice struct {
-	Items []interface{} `json:"items"`
-}
-
 // EmbedWithTag has an embedded struct whose fields clash with direct fields.
 type EmbedBase2 struct {
 	X string `json:"x"`
@@ -118,7 +113,8 @@ type StructWithRawAndTime struct {
 	Label   string          `json:"label"`
 }
 
-// PrivateEmbedded: embeds unexported type (should be skipped).
+// privateBase is an unexported struct whose exported fields encoding/json
+// promotes into HasPrivateEmbed.
 type privateBase struct {
 	Secret string `json:"secret"`
 }

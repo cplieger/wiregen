@@ -17,7 +17,7 @@ export interface HasBytes {
 
 /** HasMap has a map field. */
 export interface HasMap {
-  meta: Record<string, string>;
+  meta: { [key: string]: string };
   name: string;
 }
 

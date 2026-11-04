@@ -1,336 +1,280 @@
-// Package wiregen generates TypeScript interfaces, decoders, and an SSE
-// registry from Go struct types using go/packages + go/types + ast.Inspect.
-// Consumers register types via the compile-time-safe TypeRef[T]() helper
-// and invoke Generate to emit TS files.
+// Package wiregen generates TypeScript types, validating decoders, a typed
+// HTTP client and an OpenAPI 3.1 document from Go types and an endpoint table,
+// reading the registered packages with go/packages and go/types. A consumer
+// fills a [Registry] and calls [Registry.Generate] from a build-time command.
 package wiregen
 
 import (
 	"context"
+	"encoding"
 	"errors"
 	"fmt"
 	"maps"
-	"os"
+	"math"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
-// WireType is a compile-time-safe type reference captured by TypeRef[T]().
+// WireType names a registered Go type by package path and name.
 type WireType struct {
 	PkgPath string
 	Name    string
 }
 
-// TypeRef registers a concrete Go type for TS generation. A typo or
-// nonexistent type is a compile error — the generic constraint ensures T exists.
+// TypeRef names T, dereferencing one pointer level. A missing type is a
+// compile error at the call site.
 func TypeRef[T any]() WireType {
-	t := reflect.TypeFor[T]()
+	return TypeOf(reflect.TypeFor[T]())
+}
+
+// TypeOf names t, dereferencing one pointer level. A nil, unnamed or
+// predeclared type yields a WireType with no package, which
+// [Registry.Generate] refuses.
+func TypeOf(t reflect.Type) WireType {
+	if t == nil {
+		return WireType{}
+	}
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if t.Name() == "" {
+		return WireType{Name: t.String()}
 	}
 	return WireType{PkgPath: t.PkgPath(), Name: t.Name()}
 }
 
-// EnumDef defines a named string enum with its valid values.
-type EnumDef struct{ Values []string }
-
-// SSERegEntry maps an SSE event type to a registered struct name.
-type SSERegEntry struct {
-	EventType string
-	TypeName  string
-}
-
-// WireConst defines a named integer constant to emit into TypeScript.
+// WireConst is a named integer constant emitted into the constants file.
 type WireConst struct {
 	TSName string
 	Value  int
 }
 
-// UnionDef defines a discriminated union parsed from //wiregen:union directive.
-type UnionDef struct {
-	Discriminator string
-	Variants      []string
+// Registry is the wire contract: the types, enums, unions, endpoints and
+// events to generate from. Generate reads it and never modifies it. Every
+// type an endpoint, an event, a union or ErrorEnvelope names is generated as
+// if listed in Types.
+type Registry struct {
+	// ErrorEnvelope is every non-2xx JSON body; zero when none is declared.
+	ErrorEnvelope WireType
+	// OpenAPI is the document's info and security schemes, read when
+	// [WithOpenAPIFiles] names an output.
+	OpenAPI OpenAPIInfo
+	// TSNameOverride renames a registered type's TS identifier, keyed by its
+	// bare Go name.
+	TSNameOverride map[string]string
+	// EnumTSName renames a registered enum's TS identifier, keyed by its bare
+	// Go name.
+	EnumTSName map[string]string
+	// PathNameOverride replaces the snake_case name a decoder's error paths
+	// use for a type, keyed by its TS name.
+	PathNameOverride map[string]string
+	// Mappings replaces wiregen's reading of a Go type, keyed by its
+	// importpath.Name, with the consumer's own TS type, decoder and schema.
+	Mappings  map[string]Mapping
+	Enums     []EnumRef
+	Types     []WireType
+	Unions    []Union
+	Constants []WireConst
+	Endpoints []Endpoint
+	// Events are the frames of the event-stream endpoints, by name.
+	Events []Event
 }
 
-// Option configures optional behavior knobs on a [Registry].
+// Mapping is a Go type's wire form, written by the consumer for a type whose
+// encoding wiregen cannot read (a json.Marshaler, say).
+type Mapping struct {
+	// Schema is the value's JSON Schema; required when OpenAPI files are
+	// written. A $ref in it must be a string naming something in the document.
+	Schema map[string]any
+	// TS is the TS type expression the value has.
+	TS string
+	// Decoder is a TS expression called as (obj, key, path) that returns the
+	// field's value or throws; empty casts the value unchecked.
+	Decoder string
+}
+
+// EnumRef registers an enum by its type. Generate lists as members the
+// constants of exactly that type declared in its own package, which it loads
+// whether or not a registered type lives there. A string enum's members are
+// its constants' values; an integer enum's are the names Wire gives them, and
+// a constant Wire fails on (an invalid zero, say) is no member.
+type EnumRef struct {
+	// Wire names an integer enum's value on the wire; nil for a string enum.
+	Wire func(value uint64) (string, error)
+	Type WireType
+}
+
+// StringEnum registers T, whose constants' values are its wire names.
+func StringEnum[T ~string]() EnumRef { return EnumRef{Type: TypeRef[T]()} }
+
+// TextEnum registers T, naming each constant through T's own MarshalText, so
+// the wire spelling has one source: the owner's codec.
+func TextEnum[T interface {
+	~uint8
+	encoding.TextMarshaler
+}]() EnumRef {
+	return EnumRef{Type: TypeRef[T](), Wire: func(value uint64) (string, error) {
+		if value > math.MaxUint8 {
+			return "", fmt.Errorf("value %d overflows uint8", value)
+		}
+		b, err := T(value).MarshalText()
+		return string(b), err
+	}}
+}
+
+// Option configures one [Registry.Generate] call. Every option takes its
+// value; the last of two same options wins.
 type Option func(*options)
 
 type options struct {
-	validatorsImport      string
-	busImport             string
-	transportImport       string
-	typesImportPath       string
-	headerComment         string
-	registerFuncName      string
-	registryFuncName      string
-	typesFilename         string
-	decodersFilename      string
-	registryFilename      string
-	constantsFilename     string
-	clientFilename        string
-	validatorsFilename    string
-	arbitrariesFilename   string
-	arbitrariesImport     string
-	selfContainedRegistry bool
+	tsDir               string
+	validatorsImport    string
+	transportImport     string
+	typesImportPath     string
+	headerComment       string
+	typesFilename       string
+	decodersFilename    string
+	eventsFilename      string
+	constantsFilename   string
+	clientFilename      string
+	validatorsFilename  string
+	arbitrariesFilename string
+	arbitrariesImport   string
+	openAPIFiles        []string
+	requireJSONTags     bool
 }
 
-// WithValidatorsImport sets the import path for the validators module.
-func WithValidatorsImport(v string) Option { return func(o *options) { o.validatorsImport = v } }
+// WithTSDir names the directory every TS file is written under; required.
+// Every TS file option names a path inside it, which may hold
+// subdirectories; Generate refuses an absolute path or one leaving it, and
+// writes through an [os.Root] there, so no symlink can redirect a file out.
+func WithTSDir(dir string) Option { return func(o *options) { o.tsDir = dir } }
 
-// WithValidatorsFile makes Generate write the library-owned validators module
-// (the runtime the generated decoders import, with a DO-NOT-EDIT banner) at
-// the given path relative to outDir on every run. The path may point outside
-// outDir (e.g. "../validators.ts") so the module can live beside the
-// consumer's hand-written source at the import path the decoders use. Empty
-// (the default) writes nothing — but the module is wiregen-owned either way:
-// scaffold it via GenerateValidators() and never hand-edit it.
-func WithValidatorsFile(v string) Option { return func(o *options) { o.validatorsFilename = v } }
-
-// WithArbitrariesFile makes Generate write the property-test arbitraries module
-// at the given path relative to outDir: one fast-check arbitrary per registered
-// type and per registered enum, plus the ARBITRARY_BY_TYPE lookup table. Empty
-// (the default) writes nothing, so a consumer that does not ask for the file
-// gets exactly the files it got before.
-//
-// The arbitraries are emitted from the same parsed model as the decoders, so a
-// consumer's property test iterates the table instead of hand-maintaining one
-// arbitrary per type — and a wire type that is deleted takes its arbitrary with
-// it rather than orphaning one.
-func WithArbitrariesFile(v string) Option { return func(o *options) { o.arbitrariesFilename = v } }
-
-// WithArbitrariesImport sets the import specifier the arbitraries module takes
-// fast-check from (default "fast-check"). The emitted file imports it as the
-// default export, `fc`.
-func WithArbitrariesImport(v string) Option { return func(o *options) { o.arbitrariesImport = v } }
-
-// WithTransportImport sets the import path for the transport module the
-// generated client calls into. Required when endpoints are registered. The
-// module must export clientRequest, clientRequestOK, clientRequestRaw, and
-// the ApiResult type, as docs/http-client.md "Client-transport module" specifies.
-func WithTransportImport(v string) Option { return func(o *options) { o.transportImport = v } }
-
-// WithClientFilename overrides the generated client filename
-// (default "client.gen.ts"). It is a standalone option rather than a
-// [Filenames] field because Filenames exists to label a RUN of same-typed
-// positional arguments, which a single string does not have — and a fifth
-// field would push the struct to 80 bytes, which gocritic's hugeParam
-// correctly flags for a by-value parameter.
-func WithClientFilename(v string) Option {
-	return func(o *options) {
-		if v != "" {
-			o.clientFilename = v
-		}
-	}
+// WithValidatorsFile names the validators module wiregen writes on every run,
+// inside the TS directory (default "validators.gen.ts"). The module is
+// generated output: never hand-edit it.
+func WithValidatorsFile(name string) Option {
+	return func(o *options) { o.validatorsFilename = name }
 }
 
-// WithBusImport sets the import path for the SSE bus module.
-func WithBusImport(v string) Option { return func(o *options) { o.busImport = v } }
-
-// WithTypesImportPath sets the import path used in decoders to reference types.
-func WithTypesImportPath(v string) Option { return func(o *options) { o.typesImportPath = v } }
-
-// WithHeaderComment sets the header comment prepended to every generated file.
-func WithHeaderComment(v string) Option { return func(o *options) { o.headerComment = v } }
-
-// WithRegisterFuncName sets the function name imported from the bus module.
-func WithRegisterFuncName(v string) Option { return func(o *options) { o.registerFuncName = v } }
-
-// WithRegistryFuncName sets the exported function name in the registry file.
-func WithRegistryFuncName(v string) Option { return func(o *options) { o.registryFuncName = v } }
-
-// WithSelfContainedRegistry enables self-contained registry mode.
-func WithSelfContainedRegistry(v bool) Option {
-	return func(o *options) { o.selfContainedRegistry = v }
+// WithValidatorsImport sets the specifier every generated module imports the
+// validators module by. The default is the relative specifier from each
+// importing file, which is right unless the module is reached through a
+// bundler alias.
+func WithValidatorsImport(module string) Option {
+	return func(o *options) { o.validatorsImport = module }
 }
 
-// Filenames names the four generated output files whose names are otherwise
-// interchangeable positionals. It is a struct rather than four positional
-// strings because the four are same-typed and adjacent: a transposed pair
-// compiled and wrote each file's content under another file's name, which a
-// build only notices when an importer fails to find a symbol. Field names
-// label each one at the call site.
-//
-// An empty field keeps that file's default name, so a caller overriding one
-// name sets one field and leaves the rest zero — the zero Filenames overrides
-// nothing and is exactly equivalent to omitting WithFilenames.
-//
-// Two generated files are named elsewhere, each for its own reason: the client
-// by [WithClientFilename] (a lone string argument cannot be transposed), and
-// the validators module by [WithValidatorsFile] (whose empty value means "do
-// not write it at all", not "use the default name").
+// WithArbitrariesFile makes Generate write the property-test arbitraries
+// module at name, inside the TS directory: one fast-check arbitrary per
+// registered type and enum, plus the ARBITRARY_BY_TYPE table. Empty (the
+// default) writes no such file.
+func WithArbitrariesFile(name string) Option {
+	return func(o *options) { o.arbitrariesFilename = name }
+}
+
+// WithArbitrariesImport sets the specifier the arbitraries module imports
+// fast-check's default export from (default "fast-check").
+func WithArbitrariesImport(module string) Option {
+	return func(o *options) { o.arbitrariesImport = module }
+}
+
+// WithTransportImport sets the specifier of the transport module the
+// generated client calls into; required when endpoints are registered. The
+// module's contract is docs/http-client.md "Client-transport module".
+func WithTransportImport(module string) Option {
+	return func(o *options) { o.transportImport = module }
+}
+
+// WithClientFilename names the generated client file (default
+// "client.gen.ts").
+func WithClientFilename(name string) Option { return func(o *options) { o.clientFilename = name } }
+
+// WithTypesImportPath sets the specifier every generated module imports the
+// types file by (default: the relative specifier from each importing file).
+func WithTypesImportPath(module string) Option {
+	return func(o *options) { o.typesImportPath = module }
+}
+
+// WithHeaderComment sets the comment heading every generated file (default
+// "// Code generated by wiregen. DO NOT EDIT.").
+func WithHeaderComment(comment string) Option {
+	return func(o *options) { o.headerComment = comment }
+}
+
+// WithRequireJSONTags makes an exported field without a json tag name a
+// generation error naming its path. Without it such a field takes the name
+// encoding/json gives it, its Go name.
+func WithRequireJSONTags() Option { return func(o *options) { o.requireJSONTags = true } }
+
+// WithOpenAPIFiles makes Generate write the OpenAPI 3.1 document of the
+// registry to each path, relative to the working directory and outside the
+// TS directory's confinement, in the same pass as the TS files.
+// Registry.OpenAPI must name a title and a version.
+func WithOpenAPIFiles(paths ...string) Option {
+	return func(o *options) { o.openAPIFiles = slices.Clone(paths) }
+}
+
+// Filenames names four generated files whose names are same-typed and
+// adjacent, so a struct labels each at the call site. An empty field keeps
+// that file's default name.
 type Filenames struct {
-	// Types names the file holding the generated type declarations.
-	Types string
-	// Decoders names the file holding the generated decoders.
-	Decoders string
-	// Registry names the file holding the generated registry.
-	Registry string
-	// Constants names the file holding the generated constants.
-	Constants string
+	Types     string // default "types.gen.ts"
+	Decoders  string // default "decoders.gen.ts"
+	Events    string // default "events.gen.ts", written when Events are registered
+	Constants string // default "constants.gen.ts"
 }
 
-// WithFilenames overrides the output filenames for generated files. An empty
-// field in names keeps that file's default (see [Filenames]).
+// WithFilenames overrides the names of the types, decoders, events and
+// constants files, inside the TS directory.
 func WithFilenames(names Filenames) Option {
 	return func(o *options) {
-		if names.Types != "" {
-			o.typesFilename = names.Types
-		}
-		if names.Decoders != "" {
-			o.decodersFilename = names.Decoders
-		}
-		if names.Registry != "" {
-			o.registryFilename = names.Registry
-		}
-		if names.Constants != "" {
-			o.constantsFilename = names.Constants
-		}
+		o.typesFilename = names.Types
+		o.decodersFilename = names.Decoders
+		o.eventsFilename = names.Events
+		o.constantsFilename = names.Constants
 	}
 }
 
-// Registry holds all type registrations for code generation.
-type Registry struct {
-	Enums                 map[string]EnumDef
-	EnumTSName            map[string]string
-	TSNameOverride        map[string]string
-	PathNameOverride      map[string]string
-	TypeMappings          map[string]string
-	DecoderMappings       map[string]string
-	DiscriminatorMap      map[string]map[string]string
-	typeNames             map[string]bool
-	ValidatorsImport      string
-	TypesFilename         string
-	ConstantsFilename     string
-	RegistryFilename      string
-	DecodersFilename      string
-	ClientFilename        string
-	ValidatorsFilename    string
-	ArbitrariesFilename   string
-	ArbitrariesImport     string
-	BusImport             string
-	TransportImport       string
-	TypesImportPath       string
-	HeaderComment         string
-	RegisterFuncName      string
-	RegistryFuncName      string
-	Types                 []WireType
-	PackagePaths          []string
-	Constants             []WireConst
-	SSEEvents             []SSERegEntry
-	Endpoints             []Endpoint
-	SelfContainedRegistry bool
-}
-
-// NewRegistry creates a [Registry] with the given functional options applied.
-func NewRegistry(opts ...Option) *Registry {
-	var o options
-	for _, fn := range opts {
-		if fn != nil {
-			fn(&o)
-		}
-	}
-	return &Registry{
-		ValidatorsImport:      o.validatorsImport,
-		BusImport:             o.busImport,
-		TransportImport:       o.transportImport,
-		TypesImportPath:       o.typesImportPath,
-		HeaderComment:         o.headerComment,
-		RegisterFuncName:      o.registerFuncName,
-		RegistryFuncName:      o.registryFuncName,
-		TypesFilename:         o.typesFilename,
-		DecodersFilename:      o.decodersFilename,
-		RegistryFilename:      o.registryFilename,
-		ConstantsFilename:     o.constantsFilename,
-		ClientFilename:        o.clientFilename,
-		ValidatorsFilename:    o.validatorsFilename,
-		ArbitrariesFilename:   o.arbitrariesFilename,
-		ArbitrariesImport:     o.arbitrariesImport,
-		SelfContainedRegistry: o.selfContainedRegistry,
-	}
-}
-
-// init (re)builds the derived registration state. It runs on EVERY generate
-// call — there is no once-latch, so a Registry reused across calls (Types
-// appended between two Generate invocations) never sees stale typeNames.
-// It rejects a duplicate bare type name: the engine keys types by bare Name,
-// so two same-named types (from the same or different packages) would
-// silently merge into one emitted type.
-func (r *Registry) init() error {
-	r.initMaps()
-	r.initDefaults()
-	r.typeNames = make(map[string]bool, len(r.Types))
-	seenPkg := make(map[string]string, len(r.Types))
-	for _, wt := range r.Types {
-		if prev, dup := seenPkg[wt.Name]; dup {
-			if prev == wt.PkgPath {
-				return fmt.Errorf("wiregen: type %s.%s is registered twice", wt.PkgPath, wt.Name)
-			}
-			return fmt.Errorf("wiregen: type name %q is registered from two packages, %s and %s. wiregen keys types by bare name, so rename one type or register only one", wt.Name, prev, wt.PkgPath)
-		}
-		seenPkg[wt.Name] = wt.PkgPath
-		r.typeNames[wt.Name] = true
-	}
-	return r.validateEnums()
-}
-
-// validateEnums rejects enum registrations whose emitted identifiers collide:
-// two Go enums resolving to the same TS type name (the second would silently
-// vanish from types.gen.ts), or to the same const value-array name (reqOneOf
-// membership checks would validate against the wrong value set).
-func (r *Registry) validateEnums() error {
-	seenTS := map[string]string{}
-	seenConst := map[string]string{}
-	for _, name := range enumNamesSlice(r.Enums) {
-		tn := r.tsEnumName(name)
-		if prev, ok := seenTS[tn]; ok {
-			return fmt.Errorf("wiregen: enums %q and %q both emit TS type name %q. Set EnumTSName to disambiguate", prev, name, tn)
-		}
-		seenTS[tn] = name
-		cn := r.enumConstName(name)
-		if prev, ok := seenConst[cn]; ok {
-			return fmt.Errorf("wiregen: enums %q and %q both emit const array name %q. Set EnumTSName to disambiguate", prev, name, cn)
-		}
-		seenConst[cn] = name
-	}
-	return nil
-}
-
-// initMaps allocates the nil override/mapping maps so callers can assign into
-// them without a nil check.
-func (r *Registry) initMaps() {
-	if r.Enums == nil {
-		r.Enums = map[string]EnumDef{}
-	}
-	if r.EnumTSName == nil {
-		r.EnumTSName = map[string]string{}
-	}
-	if r.TSNameOverride == nil {
-		r.TSNameOverride = map[string]string{}
-	}
-	if r.PathNameOverride == nil {
-		r.PathNameOverride = map[string]string{}
-	}
-	if r.TypeMappings == nil {
-		r.TypeMappings = map[string]string{}
-	}
-	if r.DecoderMappings == nil {
-		r.DecoderMappings = map[string]string{}
-	}
-}
-
-// defaultHeaderComment heads every generated file when the consumer sets no
-// WithHeaderComment override.
+// defaultHeaderComment heads every generated file when no WithHeaderComment
+// is given.
 const defaultHeaderComment = "// Code generated by wiregen. DO NOT EDIT.\n\n"
 
-// moduleSpecifier returns the relative ES module specifier the generated files
-// use to import from another generated file. The Filenames knobs name
-// TypeScript SOURCE files while an ES import must name the module the compiler
-// emits, so the final extension is rewritten the way TypeScript rewrites it:
-// .mts becomes .mjs, .cts becomes .cjs, and every other extension (.ts, .tsx,
-// or none at all) becomes .js.
-func moduleSpecifier(filename string) string {
-	base, ext, _ := strings.CutLast(filename, ".")
+// resolve fills each unset option with its default.
+func (o *options) resolve() {
+	defaults := []struct {
+		field *string
+		value string
+	}{
+		{&o.headerComment, defaultHeaderComment},
+		{&o.typesFilename, "types.gen.ts"},
+		{&o.decodersFilename, "decoders.gen.ts"},
+		{&o.eventsFilename, "events.gen.ts"},
+		{&o.constantsFilename, "constants.gen.ts"},
+		{&o.clientFilename, "client.gen.ts"},
+		{&o.validatorsFilename, "validators.gen.ts"},
+		{&o.arbitrariesImport, "fast-check"},
+	}
+	for _, d := range defaults {
+		if *d.field == "" {
+			*d.field = d.value
+		}
+	}
+}
+
+// moduleSpecifier returns the relative ES module specifier by which the
+// generated file from imports the generated file to, both named inside the
+// TS directory, rewriting the extension the way TypeScript's emit does: .mts
+// to .mjs, .cts to .cjs, anything else to .js.
+func moduleSpecifier(from, to string) string {
+	rel, err := filepath.Rel(filepath.Dir(filepath.Clean(from)), filepath.Clean(to))
+	if err != nil {
+		rel = to // both are local paths, so Rel cannot fail
+	}
+	base, ext, _ := strings.CutLast(filepath.ToSlash(rel), ".")
 	out := ".js"
 	switch ext {
 	case "mts":
@@ -338,614 +282,275 @@ func moduleSpecifier(filename string) string {
 	case "cts":
 		out = ".cjs"
 	}
-	return "./" + tsStringLiteral(base) + out
+	if !strings.HasPrefix(base, "../") {
+		base = "./" + base
+	}
+	return base + out
 }
 
-// initDefaults fills the empty header/func-name/filename/import knobs with
-// their conventional defaults.
-func (r *Registry) initDefaults() {
-	if r.HeaderComment == "" {
-		r.HeaderComment = defaultHeaderComment
-	}
-	r.RegisterFuncName = sanitizeTSIdent(r.RegisterFuncName)
-	if r.RegisterFuncName == "" {
-		r.RegisterFuncName = "registerSSEDecoder"
-	}
-	r.RegistryFuncName = sanitizeTSIdent(r.RegistryFuncName)
-	if r.RegistryFuncName == "" {
-		r.RegistryFuncName = "registerAllSSEDecoders"
-	}
-	if r.TypesFilename == "" {
-		r.TypesFilename = "types.gen.ts"
-	}
-	if r.DecodersFilename == "" {
-		r.DecodersFilename = "decoders.gen.ts"
-	}
-	if r.RegistryFilename == "" {
-		r.RegistryFilename = "registry.gen.ts"
-	}
-	if r.ConstantsFilename == "" {
-		r.ConstantsFilename = "constants.gen.ts"
-	}
-	if r.ClientFilename == "" {
-		r.ClientFilename = "client.gen.ts"
-	}
-	if r.ArbitrariesImport == "" {
-		r.ArbitrariesImport = "fast-check"
-	}
-	if r.TypesImportPath == "" {
-		// Derived from TypesFilename (defaulted just above), so renaming the
-		// types file does not silently leave the decoders importing a module
-		// that was never written. An explicit WithTypesImportPath still wins,
-		// which is what a consumer keeping the types file outside outDir needs.
-		r.TypesImportPath = moduleSpecifier(r.TypesFilename)
-	}
+// generator is one Generate call's state: the registry, cloned so nothing the
+// caller holds is written, the resolved options, and the derived tables.
+type generator struct {
+	// typeNames and enums map each registered bare Go name to its package;
+	// enums also holds the members the engine discovered.
+	typeNames map[string]string
+	enums     map[string]enumDef
+	files     []genFile // every output, content unrendered
+	Registry
+	o options
 }
 
-// genFile is one generated TS file's name and in-memory content, staged before
-// the atomic rename pass in writeFilesAtomically.
-type genFile struct{ name, content string }
+// enumDef is one registered enum's package and wire members, in declaration
+// order.
+type enumDef struct {
+	pkgPath string
+	values  []string
+}
 
-// writeFilesAtomically stages every file as a temp sibling of its target,
-// then renames them into place only after all temp writes succeed. A failure
-// while staging (the common case — e.g. disk full / ENOSPC) therefore leaves
-// the committed wire/ directory untouched, and each individual rename is
-// atomic — but the rename pass itself is sequential, so a failure mid-pass
-// (e.g. outDir removed concurrently) can leave a prefix of the files updated:
-// the guarantee is per-file atomicity, not a multi-file transaction. Any temp
-// left unrenamed on an error path is removed best-effort on return. A file
-// name may carry a relative directory prefix (e.g. the ValidatorsFilename
-// "../validators.ts"); its temp is staged in the target's own directory so
-// the rename stays same-filesystem-atomic.
-func writeFilesAtomically(outDir string, files []genFile) error {
-	staged := make([]string, 0, len(files))
-	defer func() {
-		for _, name := range staged {
-			_ = os.Remove(name) // best-effort cleanup of any unrenamed temp
-		}
-	}()
-	for _, gf := range files {
-		target := filepath.Join(outDir, gf.name)
-		tmp, createErr := os.CreateTemp(filepath.Dir(target), filepath.Base(gf.name)+".*.tmp")
-		if createErr != nil {
-			return fmt.Errorf("stage %s: %w", gf.name, createErr)
-		}
-		staged = append(staged, tmp.Name())
-		_, werr := tmp.WriteString(gf.content)
-		cerr := tmp.Close()
-		if werr != nil {
-			return fmt.Errorf("write %s: %w", gf.name, werr)
-		}
-		if cerr != nil {
-			return fmt.Errorf("write %s: %w", gf.name, cerr)
-		}
-		if chmodErr := os.Chmod(tmp.Name(), 0o644); chmodErr != nil {
-			return fmt.Errorf("chmod %s: %w", gf.name, chmodErr)
+func newGenerator(r *Registry, opts []Option) (*generator, error) {
+	g := &generator{Registry: *r}
+	for _, fn := range opts {
+		if fn != nil {
+			fn(&g.o)
 		}
 	}
-	for i, gf := range files {
-		if renameErr := os.Rename(staged[i], filepath.Join(outDir, gf.name)); renameErr != nil {
-			return fmt.Errorf("write %s: %w", gf.name, renameErr)
+	g.o.resolve()
+	g.TSNameOverride = maps.Clone(r.TSNameOverride)
+	g.EnumTSName = maps.Clone(r.EnumTSName)
+	g.PathNameOverride = maps.Clone(r.PathNameOverride)
+	g.Mappings = maps.Clone(r.Mappings)
+	g.Unions = slices.Clone(r.Unions)
+	g.Enums = slices.Clone(r.Enums)
+	g.Types = slices.Clone(r.Types)
+	g.Endpoints = slices.Clone(r.Endpoints)
+	g.Events = slices.Clone(r.Events)
+	if err := g.validate(); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// validate rejects a registry or option set no file can be generated from.
+// It rejects a duplicate bare type name because the engine keys types by it.
+func (g *generator) validate() error {
+	if g.o.tsDir == "" {
+		return errors.New("wiregen: WithTSDir must be set")
+	}
+	if err := g.registerNames(); err != nil {
+		return err
+	}
+	if len(g.Endpoints) > 0 && g.o.transportImport == "" {
+		return errors.New("wiregen: WithTransportImport must be set when endpoints are registered")
+	}
+	if err := g.validateConstants(); err != nil {
+		return err
+	}
+	for _, key := range slices.Sorted(maps.Keys(g.Mappings)) {
+		if g.Mappings[key].TS == "" {
+			return fmt.Errorf("wiregen: mapping %s has no TS type", key)
+		}
+	}
+	if err := g.validateEvents(); err != nil {
+		return err
+	}
+	for _, u := range g.Unions {
+		if u.Type == (WireType{}) {
+			return fmt.Errorf("wiregen: union with tag %q names no Type", u.Tag)
+		}
+	}
+	files, err := g.outputs()
+	if err != nil {
+		return err
+	}
+	g.files = files
+	taken, err := g.claimIdents()
+	if err != nil {
+		return err
+	}
+	if err := g.validateEndpoints(taken); err != nil {
+		return err
+	}
+	return g.validateOpenAPI()
+}
+
+// typeNames and enums share one bare-name space.
+func (g *generator) registerNames() error {
+	seen, err := g.registerTypes()
+	if err != nil {
+		return err
+	}
+	g.enums = make(map[string]enumDef, len(g.Enums))
+	for _, ref := range g.Enums {
+		if err := registerName(seen, "enum", ref.Type); err != nil {
+			return err
+		}
+		g.enums[ref.Type.Name] = enumDef{pkgPath: ref.Type.PkgPath}
+	}
+	return nil
+}
+
+// registerTypes fills typeNames from Types, then appends each type the
+// endpoints, events, unions and ErrorEnvelope name that Types lacks. It returns the
+// bare names taken, for the enums to share.
+func (g *generator) registerTypes() (map[string]string, error) {
+	g.typeNames = make(map[string]string, len(g.Types))
+	seen := make(map[string]string, len(g.Types)+len(g.Enums))
+	for _, wt := range g.Types {
+		if err := registerName(seen, "type", wt); err != nil {
+			return nil, err
+		}
+		g.typeNames[wt.Name] = wt.PkgPath
+	}
+	for _, ref := range g.referencedTypes() {
+		if pkg, ok := g.typeNames[ref.wt.Name]; ref.wt == (WireType{}) || (ok && pkg == ref.wt.PkgPath) {
+			continue
+		}
+		if err := registerName(seen, ref.role, ref.wt); err != nil {
+			return nil, err
+		}
+		g.typeNames[ref.wt.Name] = ref.wt.PkgPath
+		g.Types = append(g.Types, ref.wt)
+	}
+	return seen, nil
+}
+
+// typeReference is a type the registry names outside Types, with the role
+// an error about it names.
+type typeReference struct {
+	role string
+	wt   WireType
+}
+
+// referencedTypes lists the types the endpoints, events, unions and
+// ErrorEnvelope name, in registry order.
+func (g *generator) referencedTypes() []typeReference {
+	var refs []typeReference
+	for i := range g.Endpoints {
+		e := &g.Endpoints[i]
+		for _, f := range []struct {
+			role string
+			wt   WireType
+		}{{"Params", e.Params}, {"Query", e.Query}, {"Request", e.Request}, {"Response", e.Response}} {
+			refs = append(refs, typeReference{role: "endpoint " + e.Name + " " + f.role + " type", wt: f.wt})
+		}
+	}
+	for _, ev := range g.Events {
+		refs = append(refs, typeReference{role: fmt.Sprintf("event %q data type", ev.Name), wt: ev.Data})
+	}
+	for _, u := range g.Unions {
+		refs = append(refs, typeReference{role: "union type", wt: u.Type})
+	}
+	return append(refs, typeReference{role: "ErrorEnvelope type", wt: g.ErrorEnvelope})
+}
+
+// eventsIdents are the names the events module exports.
+var eventsIdents = []string{"EventFrame", "EventName", "EVENT_DECODERS", "decodeEventFrame"}
+
+// validateEvents rejects an event with no data, a duplicate name, or a name
+// an SSE event field cannot carry (https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream).
+func (g *generator) validateEvents() error {
+	if len(g.Events) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, ev := range g.Events {
+		if ev.Name == "" || strings.ContainsAny(ev.Name, "\r\n") || !utf8.ValidString(ev.Name) {
+			return fmt.Errorf("wiregen: event name %q must be non-empty valid UTF-8 with no line break", ev.Name)
+		}
+		if seen[ev.Name] {
+			return fmt.Errorf("wiregen: event %q is registered twice", ev.Name)
+		}
+		seen[ev.Name] = true
+		if ev.Data == (WireType{}) {
+			return fmt.Errorf("wiregen: event %q has no Data type", ev.Name)
 		}
 	}
 	return nil
 }
 
-// Generate writes generated TS files to outDir using the AST engine. It loads
-// and type-checks the registered packages, which runs the go command as a
-// subprocess, so ctx bounds the whole pass: cancelling it aborts the load.
-func (r *Registry) Generate(ctx context.Context, outDir string) error {
-	if err := r.init(); err != nil {
-		return err
+// registerName records wt's bare name in seen, keyed to its package, and
+// rejects a type with no package or name, or a bare name registered twice:
+// wiregen keys types and enums by bare name.
+func registerName(seen map[string]string, role string, wt WireType) error {
+	if wt.PkgPath == "" || wt.Name == "" {
+		return fmt.Errorf("wiregen: a registered %s %+v names no package-level type; register a named type", role, wt)
 	}
-	if r.ValidatorsImport == "" {
-		return errors.New("wiregen: ValidatorsImport must be set")
+	if prev, dup := seen[wt.Name]; dup {
+		if prev == wt.PkgPath {
+			return fmt.Errorf("wiregen: %s.%s is registered twice", wt.PkgPath, wt.Name)
+		}
+		return fmt.Errorf("wiregen: name %q is registered from two packages, %s and %s. wiregen keys types and enums by bare name, so rename one or register only one", wt.Name, prev, wt.PkgPath)
 	}
-	if len(r.SSEEvents) > 0 && !r.SelfContainedRegistry && r.BusImport == "" {
-		return errors.New("wiregen: BusImport must be set when SelfContainedRegistry is false")
-	}
-	if len(r.Endpoints) > 0 && r.TransportImport == "" {
-		return errors.New("wiregen: TransportImport must be set when endpoints are registered")
-	}
-	if err := r.validateConstants(); err != nil {
-		return err
-	}
-	if err := r.validateEndpoints(); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", outDir, err)
-	}
+	seen[wt.Name] = wt.PkgPath
+	return nil
+}
 
-	engine, err := newASTEngine(ctx, r)
+// Generate writes every generated file, bounded by ctx, which the package
+// load runs under. Before creating anything it refuses two outputs that are
+// one file, two generated identifiers of one name, a $ref that is no string
+// or names nothing in the OpenAPI document and, listing every field path, a
+// field with no checked wire shape (docs/type-mapping.md). Every file is
+// staged before any replaces its target; each replacement is atomic, a
+// failure among them can leave a prefix replaced, and no temp outlives it.
+func (r *Registry) Generate(ctx context.Context, opts ...Option) error {
+	g, files, err := r.render(ctx, opts)
 	if err != nil {
 		return err
 	}
-	if err := r.validateUnionSSE(engine); err != nil {
-		return err
-	}
-
-	return writeFilesAtomically(outDir, r.buildGenFiles(engine))
+	return writeFiles(ctx, g.o.tsDir, files)
 }
 
-// buildGenFiles renders every configured output file's content in memory, so
-// a generation failure never leaves a partially-updated wire/ directory.
-func (r *Registry) buildGenFiles(engine *astEngine) []genFile {
-	var typesBuf, decodersBuf strings.Builder
-	r.generateTypes(&typesBuf, engine)
-	r.generateDecoders(&decodersBuf, engine)
-	files := []genFile{
-		{r.TypesFilename, typesBuf.String()},
-		{r.DecodersFilename, decodersBuf.String()},
-	}
-	if len(r.SSEEvents) > 0 {
-		var b strings.Builder
-		r.generateRegistry(&b)
-		files = append(files, genFile{r.RegistryFilename, b.String()})
-	}
-	if len(r.Constants) > 0 {
-		var b strings.Builder
-		r.generateConstants(&b)
-		files = append(files, genFile{r.ConstantsFilename, b.String()})
-	}
-	if len(r.Endpoints) > 0 {
-		var b strings.Builder
-		r.generateClient(&b)
-		files = append(files, genFile{r.ClientFilename, b.String()})
-	}
-	if r.ValidatorsFilename != "" {
-		var b strings.Builder
-		r.generateValidators(&b)
-		files = append(files, genFile{r.ValidatorsFilename, b.String()})
-	}
-	if r.ArbitrariesFilename != "" {
-		var b strings.Builder
-		r.generateArbitraries(&b, engine)
-		files = append(files, genFile{r.ArbitrariesFilename, b.String()})
-	}
-	return files
-}
-
-// GenerateTypes returns the types.gen.ts content as a string. Every per-file
-// string generator returns an error on the same config problems Generate
-// rejects — no exported generator panics.
-//
-// ctx bounds the package load, as in [Registry.Generate]. The four generators
-// that take one ([Registry.Generate], this, [Registry.GenerateDecoders] and
-// [Registry.GenerateArbitraries]) are exactly the four that read the registered
-// packages from source; the rest render from the registry alone and do no I/O.
-func (r *Registry) GenerateTypes(ctx context.Context) (string, error) {
-	if err := r.init(); err != nil {
-		return "", err
-	}
-	engine, err := newASTEngine(ctx, r)
+func (r *Registry) render(ctx context.Context, opts []Option) (*generator, []genFile, error) {
+	g, err := newGenerator(r, opts)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	var b strings.Builder
-	r.generateTypes(&b, engine)
-	return b.String(), nil
-}
-
-// GenerateDecoders returns the decoders.gen.ts content as a string. ctx bounds
-// the package load, as in [Registry.Generate].
-func (r *Registry) GenerateDecoders(ctx context.Context) (string, error) {
-	if err := r.init(); err != nil {
-		return "", err
-	}
-	if r.ValidatorsImport == "" {
-		return "", errors.New("wiregen: ValidatorsImport must be set")
-	}
-	engine, err := newASTEngine(ctx, r)
+	engine, err := newASTEngine(ctx, g)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	var b strings.Builder
-	r.generateDecoders(&b, engine)
-	return b.String(), nil
-}
-
-// GenerateArbitraries returns the arbitraries module's content as a string: one
-// fast-check arbitrary per registered type and per registered enum, plus the
-// ARBITRARY_BY_TYPE table. ctx bounds the package load, as in
-// [Registry.Generate].
-func (r *Registry) GenerateArbitraries(ctx context.Context) (string, error) {
-	if err := r.init(); err != nil {
-		return "", err
-	}
-	engine, err := newASTEngine(ctx, r)
+	args, err := g.validateEndpointTypes(engine)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	var b strings.Builder
-	r.generateArbitraries(&b, engine)
-	return b.String(), nil
+	files, err := g.buildGenFiles(engine, args)
+	return g, files, err
 }
 
-// GenerateRegistry returns the registry.gen.ts content as a string.
-func (r *Registry) GenerateRegistry() (string, error) {
-	if err := r.init(); err != nil {
-		return "", err
+func (g *generator) buildGenFiles(engine *astEngine, args map[string]*endpointArgs) ([]genFile, error) {
+	var doc string
+	if len(g.o.openAPIFiles) > 0 {
+		var err error
+		if doc, err = g.renderOpenAPI(engine); err != nil {
+			return nil, err
+		}
 	}
-	if !r.SelfContainedRegistry && r.BusImport == "" {
-		return "", errors.New("wiregen: BusImport must be set when SelfContainedRegistry is false")
+	files := slices.Clone(g.files)
+	render := map[string]func(*strings.Builder){
+		"types":       func(b *strings.Builder) { g.generateTypes(b, engine) },
+		"decoders":    func(b *strings.Builder) { g.generateDecoders(b, engine) },
+		"validators":  g.generateValidators,
+		"events":      g.generateEvents,
+		"constants":   g.generateConstants,
+		"client":      func(b *strings.Builder) { g.generateClient(b, args) },
+		"arbitraries": func(b *strings.Builder) { g.generateArbitraries(b, engine) },
+		roleOpenAPI:   func(b *strings.Builder) { b.WriteString(doc) },
 	}
-	if r.SelfContainedRegistry && r.ValidatorsImport == "" {
-		return "", errors.New("wiregen: ValidatorsImport must be set when SelfContainedRegistry is true")
+	for i := range files {
+		var b strings.Builder
+		render[files[i].role](&b)
+		files[i].content = b.String()
 	}
-	var b strings.Builder
-	r.generateRegistry(&b)
-	return b.String(), nil
+	return files, nil
 }
 
-// GenerateConstants returns the constants.gen.ts content as a string,
-// rejecting a registered constant whose TSName sanitizes to an empty TS
-// identifier (the same validation Generate applies).
-func (r *Registry) GenerateConstants() (string, error) {
-	if err := r.init(); err != nil {
-		return "", err
-	}
-	if err := r.validateConstants(); err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	r.generateConstants(&b)
-	return b.String(), nil
-}
-
-// validateConstants rejects any registered WireConst whose TSName sanitizes
-// to an empty TS identifier — previously such a constant was silently dropped
-// from constants.gen.ts, making a misconfigured driver invisible.
-func (r *Registry) validateConstants() error {
-	for _, c := range r.Constants {
+// validateConstants rejects a constant whose TSName has no TS-identifier
+// character, which would emit an empty name.
+func (g *generator) validateConstants() error {
+	for _, c := range g.Constants {
 		if sanitizeTSIdent(c.TSName) == "" {
 			return fmt.Errorf("wiregen: constant %q with value %d has no TS-identifier-safe characters in its TSName", c.TSName, c.Value)
 		}
 	}
 	return nil
-}
-
-// GenerateValidators returns the library-owned validators module as a string:
-// the implementation of the "Validators contract" (the 11 helper functions
-// the generated decoders import — asObject, asArray, reqStr, reqNum, reqBool,
-// optStr, optNum, optBool, reqOneOf, decodeArray, decodeRecord — plus the
-// Decoder<T> type alias), under the same DO-NOT-EDIT banner as every other
-// generated file (r.HeaderComment, or the default when unset).
-//
-// The content is constant (it does not depend on the registered types).
-// Consumers either set WithValidatorsFile so Generate writes it on every run,
-// or call this directly from their driver — never hand-edit the output. The
-// v1-era copy-once-then-own starter posture is retired.
-func (r *Registry) GenerateValidators() string {
-	var b strings.Builder
-	r.generateValidators(&b)
-	return b.String()
-}
-
-// --- helpers ---
-
-func (r *Registry) tsName(goName string) string {
-	if override, ok := r.TSNameOverride[goName]; ok {
-		if s := sanitizeTypeIdent(override); s != "" {
-			return s
-		}
-	}
-	return goName
-}
-
-func (r *Registry) tsEnumName(goName string) string {
-	if override, ok := r.EnumTSName[goName]; ok {
-		if s := sanitizeTypeIdent(override); s != "" {
-			return s
-		}
-	}
-	return goName
-}
-
-// sanitizeTypeIdent sanitizes a consumer-supplied TS type-name override —
-// the ONE sanitizer for both struct (TSNameOverride) and enum (EnumTSName)
-// overrides, so the same raw override string always yields the same
-// identifier: case-preserving character stripping plus the reserved-word
-// suffix guard.
-func sanitizeTypeIdent(s string) string {
-	t := sanitizeTSIdent(s)
-	if t == "" {
-		return ""
-	}
-	if tsReservedWords[t] {
-		return t + "Val"
-	}
-	return t
-}
-
-func (r *Registry) decoderName(typeName string) string {
-	return "decode" + r.tsName(typeName)
-}
-
-// unionPayloadDecoderName is the 1-argument payload-adapter decoder name for
-// a //wiregen:union type: decode<TSName>Payload.
-func (r *Registry) unionPayloadDecoderName(typeName string) string {
-	return "decode" + r.tsName(typeName) + "Payload"
-}
-
-// sseDecoderName returns the decoder the registry binds for an SSE event's
-// type: the 1-arg union payload adapter when the type carries a
-// DiscriminatorMap (a //wiregen:union type), otherwise the plain struct
-// decoder.
-func (r *Registry) sseDecoderName(typeName string) string {
-	if r.DiscriminatorMap[typeName] != nil {
-		return r.unionPayloadDecoderName(typeName)
-	}
-	return r.decoderName(typeName)
-}
-
-// validateUnionSSE rejects SSE registrations that cannot produce a working
-// registry: a //wiregen:union type registered in SSEEvents needs a
-// DiscriminatorMap entry (its runtime decoder and 1-arg payload adapter are
-// only emitted with one), and a union's payload-adapter name must not collide
-// with another registered type's decoder name.
-func (r *Registry) validateUnionSSE(engine *astEngine) error {
-	for _, e := range r.SSEEvents {
-		ti := engine.byName[e.TypeName]
-		if ti != nil && ti.Union != nil && r.DiscriminatorMap[e.TypeName] == nil {
-			return fmt.Errorf("wiregen: SSE event %q registers union type %s without a DiscriminatorMap entry, which its runtime decoder requires", e.EventType, e.TypeName)
-		}
-	}
-	for _, ti := range engine.types {
-		if ti.Union == nil || r.DiscriminatorMap[ti.Name] == nil {
-			continue
-		}
-		adapter := r.unionPayloadDecoderName(ti.Name)
-		for _, wt := range r.Types {
-			if wt.Name != ti.Name && r.decoderName(wt.Name) == adapter {
-				return fmt.Errorf("wiregen: union %s payload adapter %s collides with the decoder of registered type %s. Rename one type", ti.Name, adapter, wt.Name)
-			}
-		}
-	}
-	return nil
-}
-
-func (r *Registry) pathName(typeName string) string {
-	if override, ok := r.PathNameOverride[typeName]; ok {
-		return tsStringLiteral(override)
-	}
-	var b strings.Builder
-	runes := []rune(typeName)
-	for i, ru := range runes {
-		if ru < 'A' || ru > 'Z' {
-			b.WriteRune(ru)
-			continue
-		}
-		if needsWordBreak(runes, i) {
-			b.WriteByte('_')
-		}
-		b.WriteRune(ru + 32)
-	}
-	return b.String()
-}
-
-// needsWordBreak reports whether an underscore should precede runes[i] (which
-// the caller has determined is an uppercase letter): after a lowercase letter
-// (camelCase boundary), or at the tail of an acronym immediately followed by a
-// lowercase letter (e.g. the "S" in "HTTPServer").
-func needsWordBreak(runes []rune, i int) bool {
-	if i == 0 {
-		return false
-	}
-	prev := runes[i-1]
-	if prev >= 'a' && prev <= 'z' {
-		return true
-	}
-	return prev >= 'A' && prev <= 'Z' && i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
-}
-
-func (r *Registry) enumConstName(goTypeName string) string {
-	name := r.tsEnumName(goTypeName)
-	var b strings.Builder
-	runes := []rune(name)
-	for i, ru := range runes {
-		switch {
-		case ru >= 'a' && ru <= 'z':
-			b.WriteRune(ru - 32)
-		case ru >= 'A' && ru <= 'Z':
-			if needsWordBreak(runes, i) {
-				b.WriteByte('_')
-			}
-			b.WriteRune(ru)
-		default:
-			// Digits, '_', '$' pass through unchanged (the old unconditional
-			// ru-32 corrupted them into control characters / other symbols).
-			b.WriteRune(ru)
-		}
-	}
-	b.WriteString("S")
-	return b.String()
-}
-
-// keepIdentRune reports whether r is valid in a TS identifier: letters, '_'
-// and '$' are always allowed; a digit is allowed only when a prefix has
-// already been emitted (hasPrefix), so an identifier never starts with a digit.
-func keepIdentRune(r rune, hasPrefix bool) bool {
-	if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '$' {
-		return true
-	}
-	return hasPrefix && r >= '0' && r <= '9'
-}
-
-// isValidTSIdent reports whether s is usable as a bare TS identifier (an
-// interface/object property name or a member access needs no quoting). It
-// mirrors keepIdentRune's char-class and rejects the empty string and any
-// leading digit.
-func isValidTSIdent(s string) bool {
-	if s == "" || (s[0] >= '0' && s[0] <= '9') {
-		return false
-	}
-	for i, r := range s {
-		if !keepIdentRune(r, i > 0) {
-			return false
-		}
-	}
-	return true
-}
-
-// tsPropName renders wireName as a TS property name: bare when it is a valid
-// identifier (preserving existing golden output), otherwise a double-quoted
-// string-literal key so a non-identifier JSON key (e.g. "content-type") stays
-// valid TypeScript.
-func tsPropName(wireName string) string {
-	if isValidTSIdent(wireName) {
-		return wireName
-	}
-	return "\"" + tsStringLiteral(wireName) + "\""
-}
-
-// tsMemberRef renders a member access into the decoded out object: ".name" for
-// a valid identifier (preserving existing golden output), otherwise ["name"]
-// bracket access so a non-identifier JSON key stays valid TypeScript.
-func tsMemberRef(wireName string) string {
-	if isValidTSIdent(wireName) {
-		return "." + wireName
-	}
-	return "[\"" + tsStringLiteral(wireName) + "\"]"
-}
-
-// sanitizeTSIdent strips characters that are not valid in a TS identifier,
-// preserving case and underscores (unlike sanitizeVarName which camelCases).
-func sanitizeTSIdent(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if keepIdentRune(r, b.Len() > 0) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-func sanitizeVarName(wireName string) string {
-	parts := strings.Split(wireName, "_")
-	var b strings.Builder
-	for i, p := range parts {
-		if i == 0 {
-			b.WriteString(p)
-		} else if p != "" {
-			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
-		}
-	}
-	s := b.String()
-
-	// Strip characters that are not valid in a TS identifier.
-	s = sanitizeTSIdent(s)
-	if s == "" {
-		return ""
-	}
-
-	if tsReservedWords[s] {
-		return s + "Val"
-	}
-	return s
-}
-
-// tsReservedWords are the identifiers sanitizeVarName must never emit as a
-// generated `const` binding name: the ES keyword set plus the strict-mode
-// reserved words (generated files are ES modules, which are always strict),
-// `await` (reserved at module level), the strict-mode restricted binding
-// names `eval`/`arguments`, the locals the decoder emit context already binds
-// (`o`, `out`, `v`), and the globals the emitted bodies reference (`undefined`
-// in optional-field guards, `TypeError` in inline element decoders) whose
-// shadowing would silently break the generated code.
-var tsReservedWords = map[string]bool{
-	// ES keywords
-	"break": true, "case": true, "catch": true, "class": true, "const": true,
-	"continue": true, "debugger": true, "default": true, "delete": true,
-	"do": true, "else": true, "enum": true, "export": true, "extends": true,
-	"false": true, "finally": true, "for": true, "function": true, "if": true,
-	"import": true, "in": true, "instanceof": true, "new": true, "null": true,
-	"return": true, "super": true, "switch": true, "this": true, "throw": true,
-	"true": true, "try": true, "typeof": true, "var": true, "void": true,
-	"while": true, "with": true,
-	// strict-mode reserved words, restricted binding names, module-level await
-	"implements": true, "interface": true, "let": true, "package": true,
-	"private": true, "protected": true, "public": true, "static": true,
-	"yield": true, "await": true, "eval": true, "arguments": true,
-	// decoder emit-context locals
-	"o": true, "out": true, "v": true,
-	// referenced globals whose shadowing breaks emitted code
-	"undefined": true, "TypeError": true,
-}
-
-// localVarName returns a non-empty TS-safe local variable name for wireName.
-// sanitizeVarName is contracted to return "" for a wire name with no
-// identifier-safe runes (e.g. json:"_" or json:"404"); fall back to a fixed
-// safe name so the emitted `const <name> = ...` is never an empty identifier.
-func localVarName(wireName string) string {
-	if v := sanitizeVarName(wireName); v != "" {
-		return v
-	}
-	return "fieldVal"
-}
-
-// tsStringLiteral escapes a string for safe embedding in a TS double-quoted string literal.
-func tsStringLiteral(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// isIdentReferenced reports whether ident occurs in body with identifier
-// boundaries on both sides. Import/const selection is owned by the
-// usedIdents collector (identifiers recorded at their emission sites), so
-// this scan runs ONLY over the consumer-supplied Type/DecoderMappings
-// expressions (usedIdents.opaque) — never over the generated body, whose
-// string literals (wire names, paths) could false-positively match.
-func isIdentReferenced(body, ident string) bool {
-	if ident == "" {
-		return false
-	}
-	for i := 0; i < len(body); {
-		j := strings.Index(body[i:], ident)
-		if j < 0 {
-			return false
-		}
-		j += i
-		if j > 0 {
-			c := body[j-1]
-			if isIdentChar(c) {
-				i = j + len(ident)
-				continue
-			}
-		}
-		end := j + len(ident)
-		if end < len(body) {
-			c := body[end]
-			if isIdentChar(c) {
-				i = end
-				continue
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func isIdentChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
-}
-
-func enumNamesSlice(m map[string]EnumDef) []string {
-	return slices.Sorted(maps.Keys(m))
 }

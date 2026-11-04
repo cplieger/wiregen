@@ -1,28 +1,11 @@
 package wiregen
 
 // The marshal oracle checks the engine's resolved field model against
-// encoding/json's actual output — the ground truth the generated TypeScript
-// must faithfully match. For each fixture type it marshals a zero-value and a
-// reflection-populated instance and asserts, per field:
-//
-//	I1 (no phantom keys)   every marshaled key is a resolved field, so the
-//	                       generated interface covers everything on the wire;
-//	I2 (required present)  every field the engine resolves as required is
-//	                       present in both marshals, so a required interface
-//	                       member / decoder lookup can never miss;
-//	I3 (null implies opt)  a field encoding/json CAN emit as null (nil
-//	                       pointer/slice/map) is resolved Optional or is a
-//	                       raw/unknown pass-through, matching the decoders'
-//	                       null-as-absent contract (required slices/maps,
-//	                       which marshal null when nil, are the exception the
-//	                       emitters null-coalesce — asserted separately);
-//	I4 (shape agreement)   each present non-null value's JSON kind matches
-//	                       the resolved TS shape (string/number/boolean/
-//	                       array/object).
-//
-// This converts the hand-mirrored encoding/json field-selection rules
-// (promotion, tags, omitempty, special types) from carefully-mirrored to
-// mechanically checked, without any mechanism change.
+// encoding/json's output for a zero and a populated instance of each fixture:
+// I1 every marshaled key is a resolved field; I2 every required field is
+// present in both; I3 a field that marshals null is one the response schema
+// marks nullable and the decoder reads; I4 each present value's JSON kind
+// matches its resolved TS shape.
 
 import (
 	"encoding/json"
@@ -30,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/wiregen/v3/testdata/basic"
-	"github.com/cplieger/wiregen/v3/testdata/edges"
+	"github.com/cplieger/wiregen/v4/testdata/basic"
+	"github.com/cplieger/wiregen/v4/testdata/edges"
 )
 
 // oracleSpecimens are the fixture types the oracle registers and checks. Each
@@ -50,7 +33,7 @@ var oracleSpecimens = []any{
 	&basic.HasTime{},
 	&basic.HasRaw{},
 	&basic.HasMap{},
-	&basic.HasInterface{},
+	&basic.CustomID{},
 	&basic.Base{},
 	&basic.WithEmbedding{},
 	// edges
@@ -80,16 +63,16 @@ var oracleSpecimens = []any{
 	&edges.MapOfStructs{},
 	&edges.NestedOptPtr{},
 	&edges.HasOptEnum{},
+	&edges.HasPrivateEmbed{},
 }
 
 func TestMarshalOracle(t *testing.T) {
-	r := NewRegistry(WithValidatorsImport("./v.js"))
+	reg := &Registry{}
 	for _, s := range oracleSpecimens {
 		st := reflect.TypeOf(s).Elem()
-		r.Types = append(r.Types, WireType{PkgPath: st.PkgPath(), Name: st.Name()})
+		reg.Types = append(reg.Types, WireType{PkgPath: st.PkgPath(), Name: st.Name()})
 	}
-	r.init()
-	engine, err := newASTEngine(t.Context(), r)
+	engine, err := newASTEngine(t.Context(), mustGenerator(t, reg))
 	if err != nil {
 		t.Fatalf("newASTEngine: %v", err)
 	}
@@ -122,9 +105,9 @@ func TestMarshalOracle(t *testing.T) {
 				}
 			}
 			for wn, fi := range fields {
-				if !fi.Optional {
+				if !fi.absentOut() {
 					if _, ok := zeroJSON[wn]; !ok {
-						t.Errorf("I2: required field %q absent from zero-value marshal (engine should resolve it Optional)", wn)
+						t.Errorf("I2: required field %q absent from zero-value marshal (the engine should find it omittable)", wn)
 					}
 					if _, ok := fullJSON[wn]; !ok {
 						t.Errorf("I2: required field %q absent from populated marshal", wn)
@@ -141,14 +124,11 @@ func TestMarshalOracle(t *testing.T) {
 						continue
 					}
 					if v == nil {
-						// Null must be decodable: optional fields skip it,
-						// required slices/maps coalesce it to empty, and
-						// raw/iface/unknown pass it through as data.
-						nullOK := fi.Optional || fi.IsRaw || fi.IsIface ||
-							fi.TSType == tsUnknown || fi.IsSlice || fi.IsMap ||
-							fi.IsBytes
-						if !nullOK {
-							t.Errorf("I3: field %q marshals null in %s instance but is required non-collection — the generated decoder would reject encoding/json's own output", wn, m.name)
+						if fi.Kind != kindRaw && !fi.nullOut() {
+							t.Errorf("I3: field %q marshals null in %s instance, but the response schema says it never is", wn, m.name)
+						}
+						if fi.Kind != kindRaw && !fi.optional() && !fi.nilValue() {
+							t.Errorf("I3: field %q marshals null in %s instance, which its decoder refuses", wn, m.name)
 						}
 						continue
 					}
@@ -168,28 +148,24 @@ func checkJSONShape(t *testing.T, instance, wn string, fi *fieldInfo, v any) {
 			t.Errorf("I4: field %q (%s instance) resolved as %s but marshals as %T (%v)", wn, instance, want, v, v)
 		}
 	}
-	switch {
-	case fi.IsRaw || fi.IsIface || fi.TSType == tsUnknown:
-		// pass-through: any JSON value is fine
-	case fi.IsSlice:
+	switch fi.Kind {
+	case kindRaw, kindMapped:
+		// any JSON value, or the consumer's own wire form
+	case kindSlice:
 		_, ok := v.([]any)
 		kind("array ("+fi.TSType+")", ok)
-	case fi.IsMap, fi.IsStruct:
+	case kindMap, kindStruct:
 		_, ok := v.(map[string]any)
 		kind("object ("+fi.TSType+")", ok)
-	case fi.JSONString || fi.TSType == tsString:
-		_, ok := v.(string)
-		kind("string", ok)
-	case fi.TSType == tsNumber:
+	case kindNumber, kindInt, kindUint:
 		_, ok := v.(float64)
 		kind("number", ok)
-	case fi.TSType == tsBoolean:
+	case kindBool:
 		_, ok := v.(bool)
 		kind("boolean", ok)
 	default:
-		// Named enum TS types (typed strings) marshal as strings.
 		_, ok := v.(string)
-		kind("string enum ("+fi.TSType+")", ok)
+		kind("string ("+fi.TSType+")", ok)
 	}
 }
 

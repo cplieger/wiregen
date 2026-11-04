@@ -38,6 +38,12 @@ type SelfMapRequired struct {
 	Children map[string]SelfMapRequired `json:"children"`
 }
 
+// SelfNestedSlice references itself through a nested slice.
+type SelfNestedSlice struct {
+	Name string              `json:"name"`
+	Grid [][]SelfNestedSlice `json:"grid"`
+}
+
 // SelfMap references itself via a map.
 type SelfMap struct {
 	Name     string             `json:"name"`
@@ -117,7 +123,6 @@ type AllKinds struct {
 	Map     map[string]string `json:"map"`
 	Bytes   []byte            `json:"bytes"`
 	Raw     json.RawMessage   `json:"raw"`
-	Iface   interface{}       `json:"iface"`
 }
 
 // SliceOfSlice is a [][]string field.
@@ -221,8 +226,14 @@ type NestedOptPtr struct {
 	Inner *Inner `json:"inner,omitempty"`
 }
 
-// OptionalEnum tests optional enum fields.
+// MyEnum is the enum of HasOptEnum's optional field.
 type MyEnum string
+
+const (
+	MyEnumA MyEnum = "a"
+	MyEnumB MyEnum = "b"
+	MyEnumC MyEnum = "c"
+)
 
 type HasOptEnum struct {
 	Status *MyEnum `json:"status,omitempty"`

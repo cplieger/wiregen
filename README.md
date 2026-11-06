@@ -1,5 +1,8 @@
 # wiregen
 
+> Moved to [`github.com/cplieger/go/wiregen`](https://github.com/cplieger/go/tree/dev/wiregen).
+> **Archived 2026-11-06. This repository is read-only. The published Go module stays available.**
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/wiregen/v4.svg)](https://pkg.go.dev/github.com/cplieger/wiregen/v4) [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/wiregen)](https://github.com/cplieger/wiregen/blob/main/go.mod) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/wiregen/badges/mutation.json)](https://github.com/cplieger/wiregen/issues?q=label%3Agremlins-tracker)
 
 wiregen generates TypeScript types, validating JSON decoders, a typed HTTP client and an OpenAPI 3.1 document from your Go structs and endpoint table, so your TypeScript front end checks every payload your Go server sends.
